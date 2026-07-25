@@ -1,0 +1,53 @@
+{
+  "adoption_surface": "agentsolve-stage0",
+  "release_tag_pattern": "agentsolve-stage0-adoption-cpl-v<canonical-language-version>-v<adoption-semver>",
+  "canonical_source": "docs/adoption/stage0/source",
+  "adoption_semver": "0.2.0",
+  "supply_reference_version": "sprint13.launch-gate.v1",
+  "skill_projection": "skills/agentsolve",
+  "provider_neutral_bundle": "docs/adoption/stage0/bundle",
+  "generated_openapi_artifact": "docs/contracts/generated/stage0/openapi.json",
+  "generated_mcp_catalog": "docs/contracts/generated/stage0/mcp-tools.json",
+  "entrypoint": "SKILL.md",
+  "references": [
+    "references/class-selection.md",
+    "references/problem-type-tsp.md",
+    "references/problem-type-vrp-cvrp.md",
+    "references/problem-type-newsvendor.md",
+    "references/problem-type-lp.md",
+    "references/problem-type-milp.md",
+    "references/problem-type-rcpsp.md",
+    "references/method-combinatorial-routing.md",
+    "references/method-linear-programming.md",
+    "references/method-mixed-integer-linear-programming.md",
+    "references/method-stochastic-newsvendor.md",
+    "references/method-constraint-programming-scheduling.md",
+    "references/formulation-patterns.md",
+    "references/infeasibility-diagnostics.md",
+    "references/reference-verification-and-certificates.md",
+    "references/reference-mcp-access.md",
+    "references/reference-rest-access.md",
+    "references/reference-polling-and-backoff.md",
+    "references/reference-errors-and-retries.md",
+    "references/reference-large-inputs.md",
+    "references/reference-receipts-and-transparency.md",
+    "references/reference-billing-and-quotes.md",
+    "references/reference-payment-rails.md",
+    "references/reference-policy-selection-and-change-monitoring.md",
+    "references/reference-degraded-and-non-guarantees.md"
+  ],
+  "examples": [
+    "examples/run_tsp.py",
+    "examples/run_cvrp.py",
+    "examples/run_newsvendor.py",
+    "examples/run_lp.py",
+    "examples/run_milp.py",
+    "examples/run_rcpsp.py"
+  ],
+  "projection_rules": [
+    "The runtime skill projection keeps SKILL.md frontmatter.",
+    "The provider-neutral bundle strips SKILL.md frontmatter.",
+    "References remain one hop from SKILL.md in both projections.",
+    "Release evidence and owner signoff artifacts stay outside skills/agentsolve."
+  ]
+}
