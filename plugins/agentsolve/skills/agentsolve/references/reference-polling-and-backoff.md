@@ -19,5 +19,20 @@ poll `GET /v1/jobs/{job_id}` or `agentsolve.jobs.get` until `terminal=true`.
 - `DISPUTED`: use dispute or transparency surfaces for follow-up.
 - `SUPERSEDED`: use the replacement or repaired receipt path when present.
 
+## Portfolio Cohorts
+
+`terminal` is the aggregate signal for a portfolio: the polled job's own
+`status` can be `SETTLED` while `terminal` stays `false` because sibling
+members are still running — never stop polling on `status` alone.
+`cohort_members` reports each member's status, terminality, and — as soon
+as that member finishes — its own attested `routing_receipt` plus, when a
+result exists, an `output_url` that is readable immediately, before the
+rest of the cohort completes. Every settled member carries its own
+verifier-attested result: obtain each one separately, attribute it to the
+algorithm on its receipt, and keep the best by the problem's objective
+sense (a refunded member, including the polled head, contributes nothing). Portfolio cancellation is all-or-none and
+closes once any member starts; to bound waiting, stop polling at your own
+threshold of settled members and let the rest run.
+
 For result confidence, see
 [reference-verification-and-certificates.md](reference-verification-and-certificates.md).

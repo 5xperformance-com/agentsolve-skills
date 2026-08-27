@@ -12,10 +12,10 @@ import time
 from urllib import error, request
 
 PROBLEM_TYPE = "2.1.lp"
-INPUT_SCHEMA_VERSION = "2.1.lp.input.v1"
-OUTPUT_SCHEMA_VERSION = "2.1.lp.output.v1"
+INPUT_SCHEMA_VERSION = "2.1.lp.input.v2"
+OUTPUT_SCHEMA_VERSION = "2.1.lp.output.v2"
 EXAMPLE_ID = "lp-transport-seeded-001"
-CANONICAL_PROBLEM_HASH = "bbd0d71b8fb12be574a8928352d4f31d7fe07091540575a8bbde9ac0c42b44ae"
+CANONICAL_PROBLEM_HASH = "dc95c22b80e0b0bafd161533b85b259eac838220ff9e3f9bcfd80d0cc8804086"
 REST_FLOW = ["POST /v1/quotes", "POST /v1/jobs", "GET /v1/jobs/{job_id}"]
 MCP_FLOW = [
     "agentsolve.quotes.create",
@@ -87,10 +87,6 @@ PAYLOAD = {
 }
 
 DRY_RESULT = {
-    "problem_type": PROBLEM_TYPE,
-    "problem_schema_version": INPUT_SCHEMA_VERSION,
-    "output_schema_version": OUTPUT_SCHEMA_VERSION,
-    "status": "SETTLED",
     "objective_value": 105.0,
     "variable_values": {
         "ship_north_alpha": 30,
@@ -103,7 +99,6 @@ DRY_RESULT = {
     "optimality_gap": 0,
     "best_bound": 105.0,
     "solver_status": "OPTIMAL",
-    "receipt_version": "receipt.v3",
 }
 
 
@@ -119,6 +114,12 @@ def canonical_problem_hash() -> str:
 def request_json(method: str, url: str, body: dict[str, object] | None = None) -> dict[str, object]:
     data = None if body is None else json.dumps(body).encode()
     headers = {"Content-Type": "application/json"} if body is not None else {}
+    token = os.environ.get("AGENTSOLVE_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    scopes = os.environ.get("AGENTSOLVE_DEV_SCOPES")
+    if scopes:
+        headers["x-agentsolve-scopes"] = scopes
     req = request.Request(url, data=data, headers=headers, method=method)
     try:
         with request.urlopen(req, timeout=30) as response:
@@ -135,21 +136,24 @@ def quote_body() -> dict[str, object]:
         "problem_schema_version": INPUT_SCHEMA_VERSION,
         "input": PAYLOAD,
         "policy": {
-            "service_tier": "standard",
-            "max_price_usdc": "0.20",
+            "max_price_usdc": "1.00",
             "exploration_mode": "none",
             "failover_mode": "strict",
-            "allowed_regions": ["us-east-1"],
+            "allowed_regions": ["eu-west-1"],
         },
     }
 
 
-def job_body(quote: dict[str, object]) -> dict[str, object]:
+def job_body(base: str, quote: dict[str, object]) -> dict[str, object]:
     body: dict[str, object] = {
         "idempotency_key": f"{EXAMPLE_ID}-job",
         "quote_token": quote["quote_token"],
-        "auto_route": True,
     }
+    default_candidate = quote.get("default_candidate_solver_admission_id")
+    if isinstance(default_candidate, str) and default_candidate:
+        body["selected_algorithms"] = [default_candidate]
+    else:
+        body["auto_route"] = True
     payment_requirement = quote.get("payment_requirement")
     if (
         isinstance(payment_requirement, dict)
@@ -162,7 +166,16 @@ def job_body(quote: dict[str, object]) -> dict[str, object]:
     if trial_credit_code:
         payment = {"rail": "trial_credit", "trial_credit_code": trial_credit_code}
     else:
-        payment = {"rail": "stripe", "payment_intent_id": f"pi_{EXAMPLE_ID}"}
+        intent = request_json(
+            "POST",
+            f"{base}/v1/payments/stripe/payment-intents",
+            {
+                "quote_token": quote["quote_token"],
+                "job_idempotency_key": f"{EXAMPLE_ID}-job",
+                "idempotency_key": f"{EXAMPLE_ID}-pi",
+            },
+        )
+        payment = {"rail": "stripe", "payment_intent_id": intent["payment_intent_id"]}
     body["payment"] = payment
     return body
 
@@ -176,7 +189,7 @@ def dry_run() -> dict[str, object]:
         "output_schema_version": OUTPUT_SCHEMA_VERSION,
         "canonical_problem_hash": canonical_problem_hash(),
         "settled_result_hash": stable_hash(DRY_RESULT),
-        "status": DRY_RESULT["status"],
+        "status": "SETTLED",
         "rest_flow": REST_FLOW,
         "mcp_flow": MCP_FLOW,
         "payload": PAYLOAD,
@@ -194,7 +207,7 @@ def live_run(base_url: str) -> dict[str, object]:
     job = request_json(
         "POST",
         f"{base}/v1/jobs",
-        job_body(quote),
+        job_body(base, quote),
     )
     job_id = job.get("job_id") or job.get("id")
     if not job_id:

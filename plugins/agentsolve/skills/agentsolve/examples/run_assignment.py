@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Stage 0 MILP quote -> job -> poll example."""
+"""Run the Stage 0 assignment quote -> job -> poll example."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ import sys
 import time
 from urllib import error, request
 
-PROBLEM_TYPE = "2.2.milp"
-INPUT_SCHEMA_VERSION = "2.2.milp.input.v2"
-OUTPUT_SCHEMA_VERSION = "2.2.milp.output.v1"
-EXAMPLE_ID = "milp-fixed-charge-seeded-001"
-CANONICAL_PROBLEM_HASH = "4e66d719b71e82cbb5de86c948fb9f9e57e0f26bb2d0dba7fe79af51403e3b6a"
+PROBLEM_TYPE = "5.1.assignment"
+INPUT_SCHEMA_VERSION = "5.1.assignment.input.v1"
+OUTPUT_SCHEMA_VERSION = "5.1.assignment.output.v1"
+EXAMPLE_ID = "assignment-seeded-001"
+CANONICAL_PROBLEM_HASH = "7b62ba07e90c1574fff09f48645df0c0c1163e742631bf2ce1d0409e75b21b28"
 REST_FLOW = ["POST /v1/quotes", "POST /v1/jobs", "GET /v1/jobs/{job_id}"]
 MCP_FLOW = [
     "agentsolve.quotes.create",
@@ -23,77 +23,40 @@ MCP_FLOW = [
     "agentsolve.jobs.get",
 ]
 
+# Weights are integers in millis (x1000): 3200 means 3.200 cost units. The
+# caller owns the scale; receipts report the objective in this same unit.
+WEIGHT_SCALE = 1000
+
 PAYLOAD = {
-    "id": EXAMPLE_ID,
-    "job_intent": "optimize",
-    "variables": {
-        "open_alpha": {"type": "binary"},
-        "open_bravo": {"type": "binary"},
-        "ship_alpha": {"type": "integer", "lb": 0},
-        "ship_bravo": {"type": "integer", "lb": 0},
-    },
-    "constraints": [
-        {
-            "id": "alpha_capacity_link",
-            "function": {
-                "type": "linear",
-                "coefficients": {"ship_alpha": 1, "open_alpha": -12},
-                "constant": 0,
-            },
-            "set": {"type": "nonpos"},
-        },
-        {
-            "id": "bravo_capacity_link",
-            "function": {
-                "type": "linear",
-                "coefficients": {"ship_bravo": 1, "open_bravo": -10},
-                "constant": 0,
-            },
-            "set": {"type": "nonpos"},
-        },
-        {
-            "id": "minimum_units",
-            "function": {
-                "type": "linear",
-                "coefficients": {"ship_alpha": 1, "ship_bravo": 1},
-                "constant": -10,
-            },
-            "set": {"type": "nonneg"},
-        },
-        {
-            "id": "budgeted_sites",
-            "function": {
-                "type": "linear",
-                "coefficients": {"open_alpha": 1, "open_bravo": 1},
-                "constant": -2,
-            },
-            "set": {"type": "nonpos"},
-        },
+    "agents": [
+        {"id": "alice", "capacity": 2},
+        {"id": "bob"},
     ],
-    "objective": {
-        "id": "max_fixed_charge_margin",
-        "sense": "maximize",
-        "function": {
-            "type": "linear",
-            "coefficients": {
-                "open_alpha": -40,
-                "open_bravo": -35,
-                "ship_alpha": 9,
-                "ship_bravo": 7,
-            },
-            "constant": 0,
-        },
-    },
-    "metadata": {"tags": ["single-objective-fixed-charge-milp"]},
+    "tasks": [
+        {"id": "audit"},
+        {"id": "onboarding"},
+        # Optional: assigned only when it improves the objective. Here every
+        # weight is a positive cost under sense=min, so it is left unassigned.
+        {"id": "backlog", "required": False},
+    ],
+    "pairs": [
+        {"agent_id": "alice", "task_id": "audit", "weight": 3200},
+        {"agent_id": "alice", "task_id": "onboarding", "weight": 4100},
+        {"agent_id": "alice", "task_id": "backlog", "weight": 900},
+        {"agent_id": "bob", "task_id": "onboarding", "weight": 2750},
+        {"agent_id": "bob", "task_id": "backlog", "weight": 1500},
+    ],
+    "sense": "min",
 }
 
 DRY_RESULT = {
-    "objective_value": 68,
-    "variable_values": {"open_alpha": 1, "open_bravo": 0, "ship_alpha": 12, "ship_bravo": 0},
-    "best_bound": 68,
-    "optimality_gap": 0,
-    "optimality_certified": True,
+    "status": "optimal",
     "solver_status": "OPTIMAL",
+    "objective_value": 5950,
+    "assignments": [
+        {"agent_id": "alice", "task_id": "audit"},
+        {"agent_id": "bob", "task_id": "onboarding"},
+    ],
 }
 
 
@@ -185,6 +148,7 @@ def dry_run() -> dict[str, object]:
         "canonical_problem_hash": canonical_problem_hash(),
         "settled_result_hash": stable_hash(DRY_RESULT),
         "status": "SETTLED",
+        "weight_scale": WEIGHT_SCALE,
         "rest_flow": REST_FLOW,
         "mcp_flow": MCP_FLOW,
         "payload": PAYLOAD,
@@ -224,6 +188,7 @@ def live_run(base_url: str) -> dict[str, object]:
         "problem_schema_version": INPUT_SCHEMA_VERSION,
         "output_schema_version": OUTPUT_SCHEMA_VERSION,
         "canonical_problem_hash": canonical_problem_hash(),
+        "weight_scale": WEIGHT_SCALE,
         "status": observed.get("status"),
         "quote": quote,
         "job": observed,

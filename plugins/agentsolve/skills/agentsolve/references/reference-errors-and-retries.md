@@ -12,11 +12,15 @@ All agent-facing failures use the stable V5 error envelope with `code`,
 | `INVALID_PAYLOAD` | Correct canonical input; do not retry unchanged. |
 | `INTERNAL_ERROR` | Retry only when `retryable=true`; preserve idempotency key. |
 | `QUOTE_EXPIRED` | Create a fresh quote. |
-| `PAYMENT_AUTH_FAILED` | Correct funding path or ask caller to reauthorize. |
+| `PAYMENT_AUTH_FAILED` | Correct funding path or ask caller to reauthorize. When `details.extra.retry_after_seconds` is present (velocity windows span hours), wait that long — do not retry on minutes-scale backoff. |
 | `JOB_NOT_FOUND` | Check account scope and job ID. |
 | `IDEMPOTENCY_CONFLICT` | Do not reuse the key for different material inputs. |
-| `QUOTE_HINTS_MISMATCH` | Resubmit with the same quote-bound hints or create a new quote. |
+| `QUOTE_HINTS_MISMATCH` | Pass the quote's `effective_solver_hints` verbatim on the job, or create a new quote. |
 | `INVALID_JOB_STATE` | Follow the lifecycle; do not force the transition. |
+| `ROUTING_MODE_NOT_SPECIFIED` | Include exactly one routing mode on job creation. |
+| `ROUTING_MODE_AMBIGUOUS` | Send only one of `auto_route` / `selected_algorithms`. |
+| `COHORT_SIZE_EXCEEDED` | Portfolio jobs take at most 10 solver admission ids. |
+| `MODE_3_NO_ELIGIBLE_CANDIDATE` | Relax the policy or select a solver explicitly. |
 | `CONCURRENT_QUOTE_CONSUMPTION` | Poll or retry with the same idempotency key. |
 | `AUTHENTICATION_REQUIRED` | Refresh credentials. |
 | `ORIGIN_NOT_ALLOWED` | Use an allowed MCP or REST origin. |

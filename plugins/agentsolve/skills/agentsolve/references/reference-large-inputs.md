@@ -1,18 +1,14 @@
-# Large Inputs
+# Input Size Limit
 
 Inline canonical JSON payloads must be no larger than `1 MiB` after canonical
-encoding. Larger inputs use upload handles rather than embedding payloads in
-REST requests or MCP messages.
+encoding. Larger inputs are not accepted in the current public posture.
 
-## Flow
+Upload handles are disabled outside local development until governed
+object-payload storage passes its separate security, residency, deletion, and
+provider-qualification gate. Do not call `POST /v1/inputs/presign`,
+`PUT /v1/inputs/{input_handle}`, or `agentsolve.uploads.create_handle` in a
+public workflow.
 
-1. Request an upload handle with `POST /v1/inputs/presign` or
-   `agentsolve.uploads.create_handle`.
-2. Upload the canonical JSON out of band to the returned handle.
-3. Create the quote by referencing the uploaded object handle while preserving
-   `problem_type`, `problem_schema_version`, and canonical problem hashing.
-4. Validate before quote creation; invalid input is not billable.
-
-The canonical problem hash is computed from canonicalized payload content, not
-from the upload URL or handle string. REST and MCP use the same underlying
-object-handle contract.
+Keep the inline payload within the limit or reduce the instance before quote
+creation. A future activation will publish a new direct-upload workflow and
+its exact limits; the disabled API-origin proxy is not that workflow.

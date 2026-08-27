@@ -17,11 +17,15 @@ syntax.
 Stage 0 non-guarantees:
 
 - no global optimality claim unless exact certification exists
+- no runtime, quality, or capacity guarantee from a complexity-tier label;
+  an open-ended L region is only a catalog price segment
 - no support claim for every optimization or inference domain
 - no provider-hosted privacy or enclave-backed execution claim
 - no decentralization or governance-by-stake claim
 - no zero-variance latency or price forecast claim
 
-`optimality_certified`, `optimality_gap`, `proved_optimal`, and warning blocks
-should be read with
+Treat `optimality_certified`, `optimality_gap`, `proved_optimal`, and warning
+blocks as diagnostics. On quotes, inspect `estimate_basis` and
+`evidence_scope_state`; on receipts, inspect `established_guarantee`. Read
+authoritative claims with
 [reference-verification-and-certificates.md](reference-verification-and-certificates.md).

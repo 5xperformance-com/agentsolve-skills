@@ -2,12 +2,13 @@
 
 Canonical schema versions:
 
-- Input: `4.1.scheduling.rcpsp.input.v2`
-- Output: `4.1.scheduling.rcpsp.output.v2`
+- Input: `4.1.scheduling.rcpsp.input.v3`
+- Output: `4.1.scheduling.rcpsp.output.v3`
 
 Use `4.1.scheduling.rcpsp` for deterministic project scheduling with
 activities, durations, precedence constraints, renewable resources, calendars,
-activity windows, and either `job_intent=optimize` or `job_intent=verify_only`.
+non-renewable resource budgets, activity windows, and either
+`job_intent=optimize` or `job_intent=verify_only`.
 
 ## Formulation Recipe
 
@@ -15,14 +16,21 @@ activity windows, and either `job_intent=optimize` or `job_intent=verify_only`.
 - Precedences support `FS`, `SS`, `FF`, and `SF` with `min_lag` and optional
   `max_lag`.
 - Resources are renewable and may include calendars with half-open day ranges.
+- `non_renewable_resources` declares consumables, each with one integer
+  `budget` for the whole project, under IDs disjoint from renewable
+  resources. A mode (or single-mode activity) declares its integer
+  consumption per consumable, spent once if that mode runs; the selected
+  modes' summed consumption must fit each budget.
 - Activity windows use `release_day` and `due_day`.
 - `candidate_schedule` is required for `verify_only` and absent for `optimize`.
-- RCPSP activity-count tiers are `S <= 30`, `M <= 200`, and `L > 200`.
+- RCPSP activity-count tiers are `S <= 20`, `M <= 60`, and
+  `61 <= L <= 2,500`; precedences are capped at 10,000. The quote descriptor
+  also reports modes, resources, projects, generalized lags, calendars, and
+  the derived horizon.
 
-Receipt tier is selected at quote time through `constraints.receipt_tier`.
-Supported values are `validity_only`, `validity_plus_quality`, and `full`; the
-selection is bound to quote, job, and receipt without changing the canonical
-problem hash.
+Receipt tiers are not offered. Omit `constraints.receipt_tier`; an explicit
+non-null tier request is rejected. The compatibility field remains nullable in
+responses, and every settled job receives the full standard receipt.
 
 Solver availability is discovered through the menu and quote response. Additional
 RCPSP execution families may appear as provider-neutral supply, but the payload
@@ -32,24 +40,24 @@ remains the canonical schema above and not a backend modelling dialect.
 
 | Required semantic | Action |
 |---|---|
-| non-renewable resources | code `non_renewable_rcpsp_resource`, nearest_supported_subset `4.1.scheduling.rcpsp`, roadmap_status `deferred` |
 | random durations | code `stochastic_durations`, nearest_supported_subset deterministic RCPSP, roadmap_status `deferred` |
 | makespan plus smoothing as separate objectives | code `multi_objective_scheduling`, nearest_supported_subset one accepted linear objective, roadmap_status `deferred` |
 
-`4.2.scheduling.jssp` is planned only. Do not present arbitrary job-shop
-execution as a Stage 0 launch class. Rolling rescheduling, arbitrary hierarchy
-management, and quadratic smoothing are outside this launch reference.
+`4.2.scheduling.jssp` has its own launch-scoped canonical contract. Do not
+substitute it for rolling rescheduling, arbitrary hierarchy management, or
+quadratic smoothing.
 
 ## Output And Self-Checks
 
-The output cites `4.1.scheduling.rcpsp.output.v2`. Read `schedule[].activity_id`,
+The output cites `4.1.scheduling.rcpsp.output.v3`. Read `schedule[].activity_id`,
 `schedule[].start_day`, `schedule[].finish_day`, conditional
 `schedule[].mode_id`, top-level `makespan_days`, and objective value.
 
 Before quote creation, check precedence cycles, mode selection, calendar
-capacity, activity windows, candidate schedule coverage, and horizon derivation.
-The verifier recomputes precedence satisfaction, renewable-resource capacity,
-calendar legality, windows, mode legality, and makespan.
+capacity, non-renewable budgets against minimum consumption, activity windows,
+candidate schedule coverage, and horizon derivation. The verifier recomputes
+precedence satisfaction, renewable-resource capacity, calendar legality,
+non-renewable budget consumption, windows, mode legality, and makespan.
 
 ## Minimal REST Sketch
 
@@ -57,7 +65,7 @@ calendar legality, windows, mode legality, and makespan.
 {
   "idempotency_key": "quote-rcpsp-001",
   "problem_type": "4.1.scheduling.rcpsp",
-  "problem_schema_version": "4.1.scheduling.rcpsp.input.v2",
+  "problem_schema_version": "4.1.scheduling.rcpsp.input.v3",
   "input": {
     "profile": "RCPSP",
     "job_intent": "optimize",
@@ -65,8 +73,7 @@ calendar legality, windows, mode legality, and makespan.
     "precedences": [],
     "resources": {"crew": {"capacity": 1}},
     "objectives": {"primary": "minimize_makespan"}
-  },
-  "constraints": {"receipt_tier": "full"}
+  }
 }
 ```
 
@@ -78,14 +85,15 @@ calendar legality, windows, mode legality, and makespan.
   "arguments": {
     "idempotency_key": "quote-rcpsp-001",
     "problem_type": "4.1.scheduling.rcpsp",
-    "problem_schema_version": "4.1.scheduling.rcpsp.input.v2"
+    "problem_schema_version": "4.1.scheduling.rcpsp.input.v3"
   }
 }
 ```
 
-Common pitfalls: omitted precedences, calendar gaps, invalid candidate schedules,
-oversized horizons, confusing resource leveling with a second objective, and
-using `time_budget_ms` as a modelling deadline.
+Common pitfalls: omitted precedences, calendar gaps, invalid candidate
+schedules, oversized horizons, budgets declared without any mode consumption,
+requesting a withdrawn receipt tier, confusing resource leveling with a second
+objective, and using `time_budget_ms` as a modelling deadline.
 
 For scheduling-method and result-confidence guidance, see
 [method-constraint-programming-scheduling.md](method-constraint-programming-scheduling.md),

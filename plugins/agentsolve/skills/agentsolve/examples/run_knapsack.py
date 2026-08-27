@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Stage 0 newsvendor quote -> job -> poll example."""
+"""Run a 0/1 knapsack quote -> job -> poll example."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ import sys
 import time
 from urllib import error, request
 
-PROBLEM_TYPE = "3.1.newsvendor"
-INPUT_SCHEMA_VERSION = "3.1.newsvendor.input.v1"
-OUTPUT_SCHEMA_VERSION = "3.1.newsvendor.output.v2"
-EXAMPLE_ID = "newsvendor-seeded-001"
-CANONICAL_PROBLEM_HASH = "b2999d6ce7fe641b2c4e08e58ce29f06f05309c9fd71b226e7bb1ef68c0f230a"
+PROBLEM_TYPE = "9.1.knapsack"
+INPUT_SCHEMA_VERSION = "9.1.knapsack.input.v2"
+OUTPUT_SCHEMA_VERSION = "9.1.knapsack.output.v1"
+EXAMPLE_ID = "knapsack-seeded-001"
+CANONICAL_PROBLEM_HASH = "918f9396c49515f63322716160dce360657c9d1cbc48a5d9322b93bce35c0c4e"
 REST_FLOW = ["POST /v1/quotes", "POST /v1/jobs", "GET /v1/jobs/{job_id}"]
 MCP_FLOW = [
     "agentsolve.quotes.create",
@@ -24,31 +24,23 @@ MCP_FLOW = [
 ]
 
 PAYLOAD = {
-    "id": EXAMPLE_ID,
-    "objective": "max_expected_profit",
+    "capacity": 2,
     "items": [
-        {
-            "sku_id": "meal_kit_a",
-            "unit_cost": 8.0,
-            "selling_price": 14.0,
-            "salvage_value": 3.0,
-            "stockout_penalty": 1.0,
-            "min_order_qty": 0,
-            "max_order_qty": 60,
-            "order_step": 5,
-            "demand_scenarios": [
-                {"demand_qty": 20, "probability": 0.25},
-                {"demand_qty": 35, "probability": 0.5},
-                {"demand_qty": 50, "probability": 0.25},
-            ],
-        }
+        {"id": "a", "weight": 1, "value": 1},
+        {"id": "b", "weight": 1, "value": 1},
+        {"id": "c", "weight": 2, "value": 2},
     ],
 }
 
 DRY_RESULT = {
+    "status": "optimal",
     "solver_status": "OPTIMAL",
-    "objective_value": 151.25,
-    "order_quantities": {"meal_kit_a": 35},
+    "selected_item_ids": ["a", "b"],
+    "total_weight": 2,
+    "objective_value": 2,
+    "best_bound": 2,
+    "proved_optimal": True,
+    "warnings": [],
 }
 
 
@@ -70,13 +62,14 @@ def request_json(method: str, url: str, body: dict[str, object] | None = None) -
     scopes = os.environ.get("AGENTSOLVE_DEV_SCOPES")
     if scopes:
         headers["x-agentsolve-scopes"] = scopes
-    req = request.Request(url, data=data, headers=headers, method=method)
     try:
-        with request.urlopen(req, timeout=30) as response:
+        with request.urlopen(
+            request.Request(url, data=data, headers=headers, method=method), timeout=30
+        ) as response:
             return json.loads(response.read().decode())
     except error.HTTPError as exc:
-        detail = exc.read().decode()
-        raise SystemExit(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
+        message = f"{method} {url} failed with HTTP {exc.code}: {exc.read().decode()}"
+        raise SystemExit(message) from exc
 
 
 def quote_body() -> dict[str, object]:
@@ -104,17 +97,12 @@ def job_body(base: str, quote: dict[str, object]) -> dict[str, object]:
         body["selected_algorithms"] = [default_candidate]
     else:
         body["auto_route"] = True
-    payment_requirement = quote.get("payment_requirement")
-    if (
-        isinstance(payment_requirement, dict)
-        and payment_requirement.get("requires_payment") is False
-    ):
+    requirement = quote.get("payment_requirement")
+    if isinstance(requirement, dict) and requirement.get("requires_payment") is False:
         return body
-
-    payment: dict[str, object]
-    trial_credit_code = os.environ.get("AGENTSOLVE_TRIAL_CREDIT_CODE")
-    if trial_credit_code:
-        payment = {"rail": "trial_credit", "trial_credit_code": trial_credit_code}
+    trial_code = os.environ.get("AGENTSOLVE_TRIAL_CREDIT_CODE")
+    if trial_code:
+        body["payment"] = {"rail": "trial_credit", "trial_credit_code": trial_code}
     else:
         intent = request_json(
             "POST",
@@ -125,15 +113,16 @@ def job_body(base: str, quote: dict[str, object]) -> dict[str, object]:
                 "idempotency_key": f"{EXAMPLE_ID}-pi",
             },
         )
-        payment = {"rail": "stripe", "payment_intent_id": intent["payment_intent_id"]}
-    body["payment"] = payment
+        body["payment"] = {
+            "rail": "stripe",
+            "payment_intent_id": intent["payment_intent_id"],
+        }
     return body
 
 
 def dry_run() -> dict[str, object]:
     return {
         "mode": "dry_run",
-        "example_id": EXAMPLE_ID,
         "problem_type": PROBLEM_TYPE,
         "problem_schema_version": INPUT_SCHEMA_VERSION,
         "output_schema_version": OUTPUT_SCHEMA_VERSION,
@@ -150,39 +139,17 @@ def dry_run() -> dict[str, object]:
 def live_run(base_url: str) -> dict[str, object]:
     base = base_url.rstrip("/")
     quote = request_json("POST", f"{base}/v1/quotes", quote_body())
-    quote_id = quote.get("quote_id") or quote.get("id")
-    if not quote_id:
-        raise SystemExit("quote response did not include quote_id")
-
-    job = request_json(
-        "POST",
-        f"{base}/v1/jobs",
-        job_body(base, quote),
-    )
-    job_id = job.get("job_id") or job.get("id")
-    if not job_id:
+    job = request_json("POST", f"{base}/v1/jobs", job_body(base, quote))
+    job_id = job.get("job_id")
+    if not isinstance(job_id, str):
         raise SystemExit("job response did not include job_id")
-
-    terminal = {"SETTLED", "REFUNDED", "DISPUTED", "SUPERSEDED"}
     observed = job
     for _ in range(60):
-        if str(observed.get("status")) in terminal or observed.get("terminal") is True:
+        if observed.get("terminal") is True:
             break
-        wait_ms = int(observed.get("recommended_poll_after_ms") or 1000)
-        time.sleep(max(wait_ms, 100) / 1000)
+        time.sleep(max(int(observed.get("recommended_poll_after_ms") or 100), 100) / 1000)
         observed = request_json("GET", f"{base}/v1/jobs/{job_id}")
-
-    return {
-        "mode": "live",
-        "example_id": EXAMPLE_ID,
-        "problem_type": PROBLEM_TYPE,
-        "problem_schema_version": INPUT_SCHEMA_VERSION,
-        "output_schema_version": OUTPUT_SCHEMA_VERSION,
-        "canonical_problem_hash": canonical_problem_hash(),
-        "status": observed.get("status"),
-        "quote": quote,
-        "job": observed,
-    }
+    return {"mode": "live", "quote": quote, "job": observed}
 
 
 def main() -> int:
@@ -190,9 +157,8 @@ def main() -> int:
     parser.add_argument("--base-url", default=os.environ.get("AGENTSOLVE_BASE_URL"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-
-    output = dry_run() if args.dry_run or not args.base_url else live_run(args.base_url)
-    print(json.dumps(output, indent=2, sort_keys=True))
+    result = dry_run() if args.dry_run or not args.base_url else live_run(args.base_url)
+    print(json.dumps(result, indent=2))
     return 0
 
 

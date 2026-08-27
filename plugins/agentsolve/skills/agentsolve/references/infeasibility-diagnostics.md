@@ -23,6 +23,7 @@ unbounded, time-limited, or warning-bearing outcome.
   `optimality_gap`; do not call it optimal.
 - Numerical warning: inspect units, coefficient scaling, and weak big-M values.
 
-`proved_optimal` and `optimality_certified` are not interchangeable. Use
+Proof flags, gaps, and bounds are solver diagnostics rather than verifier
+certificates. Use
 [reference-verification-and-certificates.md](reference-verification-and-certificates.md)
 for result-confidence guidance.

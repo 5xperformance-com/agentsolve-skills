@@ -1,14 +1,22 @@
 # Policy Selection And Change Monitoring
 
-Use policy fields to express caller constraints, not solver tuning.
+Use policy fields to express caller constraints, not solver tuning. The
+`policy` object is required on every quote request; within it,
+`max_price_usdc` is mandatory and everything else is optional. There are
+no service tiers: every job runs on the one production path, and a stray
+`service_tier` key is rejected as an unknown field.
 
 ## Policy Fields
 
-- `service_tier`: latency/quality/economics tier requested by the caller.
-- `max_price_usdc`: hard price ceiling.
+- `max_price_usdc` (required): hard price ceiling.
 - `max_latency_seconds`: caller latency tolerance.
 - `quality_floor`: minimum acceptable quality estimate.
+- `minimum_evidence_state`: `declared_only` (default), `qualification_only`,
+  or `production_observed` — the evidence bar candidates must meet.
+- `exploration_mode`: exploration posture; default `none`.
+- `failover_mode`: failover posture; default `strict`.
 - `allowed_regions`: permitted serving regions.
+- `pin`: pin a previously quoted selection.
 - `allowed_solver_families`: optional family allow-list.
 - `excluded_solver_families`: optional family deny-list.
 

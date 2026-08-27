@@ -9,13 +9,17 @@ The verifier checks constraint validity and objective recomputation. Backend
 metadata may include `solver_status`, `best_bound`, `optimality_gap`, and
 `optimality_certified`.
 
-```text
-optimality_certified = (solver_status == OPTIMAL) AND (optimality_gap <= OPTIMALITY_GAP_CERTIFICATION_TOLERANCE)
-```
+`optimality_certified` is a backward-compatible solver diagnostic. It can be
+true only when the admitted adapter maps an explicit terminal `OPTIMAL` proof
+signal. A zero or approximately zero gap never creates a proof claim.
+
+Use `attestation.claims` for authoritative meaning: `valid_result` is
+verifier-sourced, `solver_proved` is solver-sourced, and
+`independent_certificate` is verifier-sourced for a named proposition.
 
 ## Time Limits And Bounds
 
-`TIME_LIMIT` means the solver stopped before certified optimality. The incumbent
+`TIME_LIMIT` means the solver stopped before proving optimality. The incumbent
 may be useful, but agents must report the bound and gap plainly. `best_bound`
 has the same objective sense as the public result and is the basis for gap
 interpretation.

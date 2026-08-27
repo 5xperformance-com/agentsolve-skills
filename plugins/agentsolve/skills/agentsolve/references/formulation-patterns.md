@@ -16,9 +16,15 @@ before quote creation.
 - piecewise-linear convex cost: linear segment variables and accepted breakpoints.
 - absolute value in objective: positive and negative deviation variables.
 - min-max or max-min: auxiliary bound variable and linear linking constraints.
-- goal programming: goal-programming single-objective LP/MILP reformulation per ASB-707.
+- goal programming: goal-programming single-objective LP/MILP reformulation.
 - symmetry breaking: deterministic ordering constraints that do not remove
   valid business solutions.
+- stay close to a known plan: when the reference plan is a constant, penalising
+  each change is a cost reweighting, not a new variable. Subtract the penalty
+  from the weight of every choice the reference already makes and add it to
+  every choice it does not; the optimum is the same one an explicit difference
+  term would give. Classes that price churn as a declared field, such as
+  rostering, take the field instead.
 
 ## Routing And Scheduling Patterns
 
@@ -31,7 +37,7 @@ before quote creation.
 - RCPSP horizon: derive a finite horizon from durations, calendars, and windows
   rather than using a casual oversized value.
 
-Weighted-sum single-objective LP/MILP reformulation per ASB-707,
-lexicographic staged single-objective LP/MILP solve per ASB-707, and
-threshold-plus-objective single-objective LP/MILP formulation per ASB-707 are
+Weighted-sum single-objective LP/MILP reformulation,
+lexicographic staged single-objective LP/MILP solve, and
+threshold-plus-objective single-objective LP/MILP formulation are
 allowed only when each solve remains an ordinary single-objective Stage 0 job.

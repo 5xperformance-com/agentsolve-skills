@@ -3,7 +3,7 @@
 Canonical schema versions:
 
 - Input: `3.1.newsvendor.input.v1`
-- Output: `3.1.newsvendor.output.v1`
+- Output: `3.1.newsvendor.output.v2`
 
 Use `3.1.newsvendor` for a single-period inventory or capacity-ordering
 decision with explicit discrete demand. The demand uncertainty must be supplied
@@ -19,6 +19,10 @@ forecast inside the adoption flow.
 - Recompute by summing cost or profit over the explicit demand outcomes.
 - Use LP/MILP only when the caller adds linear coupling constraints that are
   genuinely part of the accepted model.
+- S means at most 2 SKUs and 16 total scenarios; M means outside S but at most
+  8 SKUs and 64 total scenarios; larger schema-valid inputs are L. The schema
+  caps SKUs at 2,500 and scenarios at 10,000 per SKU. Inspect
+  `order_grid_work` for performance evidence.
 
 ## Deferrals
 
@@ -33,11 +37,13 @@ drafting. Censored sales are not the same as true demand.
 
 ## Result Interpretation
 
-The output cites `3.1.newsvendor.output.v1` and reports the selected quantity
+The output cites `3.1.newsvendor.output.v2` and reports the selected quantity
 with expected cost or expected profit. For the single-SKU unconstrained case,
 the critical fractile is the useful sanity check: order up to the demand
 quantile implied by underage cost divided by underage plus overage cost. The
-verifier can recompute closed-form or grid evidence over the explicit scenarios.
+verifier recomputes the expected objective over the explicit scenarios and,
+inside the published enumeration work cap, independently proves grid optimality
+with an exact rational certificate.
 
 ## Minimal REST Sketch
 

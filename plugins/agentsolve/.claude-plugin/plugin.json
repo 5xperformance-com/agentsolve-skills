@@ -1,8 +1,10 @@
 {
   "name": "agentsolve",
   "description": "AgentSolve adoption skill: classify a request into a problem class, draft canonical input, and drive the quote → job → poll flow over REST or MCP.",
-  "version": "0.2.0",
-  "author": { "name": "AgentSolve" },
+  "version": "0.13.0",
+  "author": {
+    "name": "AgentSolve"
+  },
   "homepage": "https://agentsolve.io/docs/skills",
   "repository": "https://github.com/5xperformance-com/agentsolve-skills"
 }

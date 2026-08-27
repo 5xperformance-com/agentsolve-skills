@@ -1,0 +1,887 @@
+#!/usr/bin/env python3
+"""Submit translated canonical documents through quote -> job -> poll.
+
+Reads one or more submission documents written by tools/translate.py, creates
+a quote, resolves funding (account-credit authority first, then trial credit,
+then an already-confirmed Stripe PaymentIntent, then an automatic faucet
+fallback when the account is enrolled in an active faucet program), creates
+the job, polls to a terminal state, and writes results named after the source
+instance (`foo.tsp` -> `foo.result.json`, plus a TSPLIB `foo.tour` for
+`1.1.tsp` and a CVRPLIB `foo.sol` for `1.2.vrp.cvrp`). Use `--out-dir` to
+write them where your task expects (for example `--out-dir solutions`); the
+default is the document's own directory.
+
+Routing: the default runs the quote's default candidate solver — one engine,
+one price. When the task asks for the best achievable answer, pass
+`--portfolio` to run every eligible candidate on the quote (up to the cohort
+cap of 10); the tool polls until the whole cohort finishes (reporting N/M
+progress), obtains every settled member's result separately — one attributed
+artifact per solver (`foo.<solver_admission_id>.result.json`, carrying that
+member's own receipt), so a portfolio doubles as a benchmarking sweep — and
+additionally emits the best result by the problem's objective sense as the
+headline answer. `--select ID [ID ...]` submits an explicit cohort, and
+`--auto-route` uses the platform's deterministic catalog-default selection.
+`--settled-threshold N` stops waiting once N members have settled and ranks
+exactly the first N responses by settlement order — receipt timestamps, so
+"call ten, keep the best of the first three" holds even when more members
+finish between polls; the remaining members keep running server-side
+(portfolio cancellation is all-or-none, so nothing is cancelable once any
+member starts). If the cohort terminalizes with fewer than N settled
+members, or any ranked member's evidence cannot be written, the command
+fails without a headline answer: a "best" drawn from a silently reduced
+subset is not evidence. The job price multiplies by the cohort size, and portfolio jobs
+pay from account credit or trial credit only; the Stripe rail rejects
+portfolios by design.
+
+Usage:
+    python tools/submit.py DOC.canonical.json [MORE.canonical.json ...]
+        [--portfolio | --select ADMISSION_ID [ADMISSION_ID ...] | --auto-route]
+        [--settled-threshold N]
+        [--base-url URL] [--out-dir DIR] [--poll-timeout SECONDS]
+
+Environment: AGENTSOLVE_BASE_URL, AGENTSOLVE_API_TOKEN, AGENTSOLVE_DEV_SCOPES,
+AGENTSOLVE_TRIAL_CREDIT_CODE, AGENTSOLVE_STRIPE_PAYMENT_INTENT_ID (an already
+confirmed intent for the Stripe rail), AGENTSOLVE_MAX_PRICE_USDC (default
+"1.00").
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+from translate import NativeFormatError, write_sol, write_tour
+
+TERMINAL_STATUSES = {"SETTLED", "REFUNDED", "DISPUTED", "SUPERSEDED"}
+CAPTURABLE_INTENT_STATUSES = {"requires_capture", "succeeded"}
+COHORT_CAP = 10
+
+
+class FundingError(SystemExit):
+    """No payment option was fundable; the message enumerates recoveries."""
+
+
+def request_json(method: str, url: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    from urllib import error, request
+
+    data = None if body is None else json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    token = os.environ.get("AGENTSOLVE_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    scopes = os.environ.get("AGENTSOLVE_DEV_SCOPES")
+    if scopes:
+        headers["x-agentsolve-scopes"] = scopes
+    req = request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with request.urlopen(req, timeout=60) as response:
+            return json.loads(response.read().decode())
+    except error.HTTPError as exc:
+        detail = exc.read().decode()
+        raise SystemExit(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
+
+
+def load_document(path: Path) -> dict[str, Any]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    for field in ("problem_type", "problem_schema_version", "payload"):
+        if field not in document:
+            raise SystemExit(f"{path}: submission document lacks {field!r}")
+    return document
+
+
+def source_stem(path: Path, document: dict[str, Any]) -> str:
+    """The source instance's name without its native suffix (foo.tsp -> foo)."""
+    name = document.get("source_file")
+    if not isinstance(name, str) or not name:
+        name = path.name
+        if name.endswith(".canonical.json"):
+            name = name[: -len(".canonical.json")]
+    if name.endswith(".gz"):
+        name = name[: -len(".gz")]
+    stem, _, suffix = name.rpartition(".")
+    return stem if stem and suffix else name
+
+
+def routing_signature(routing: argparse.Namespace) -> str:
+    if routing.auto_route:
+        return "auto-route"
+    if routing.select:
+        return "select:" + ",".join(routing.select)
+    if routing.portfolio:
+        return "portfolio"
+    return "default"
+
+
+def stable_key(path: Path, document: dict[str, Any], routing: argparse.Namespace) -> str:
+    """Deterministic per (payload, routing mode) so re-running the same mode
+    replays, while a different mode executes instead of replaying the
+    previous job under the same idempotency key."""
+    material = (
+        json.dumps(document["payload"], sort_keys=True, separators=(",", ":")).encode()
+        + b"\x00"
+        + routing_signature(routing).encode()
+    )
+    digest = hashlib.sha256(material).hexdigest()
+    return f"{source_stem(path, document)}-{digest[:12]}"
+
+
+def objective_sense(document: dict[str, Any]) -> str:
+    """The direction "best" means for this document's objective_value.
+
+    Each canonical class declares its direction its own way: LP/MILP carry
+    ``objective.sense``, assignment a top-level ``sense``, newsvendor an
+    ``objective`` string that starts with min/max; knapsack maximizes by
+    definition, and every other launch class minimizes. Getting this wrong
+    deliberately selects the worst solver in a portfolio.
+    """
+    payload = document.get("payload") or {}
+    objective = payload.get("objective")
+    if isinstance(objective, dict):
+        sense = str(objective.get("sense", "")).lower()
+        if sense in {"minimize", "min"}:
+            return "min"
+        if sense in {"maximize", "max"}:
+            return "max"
+    if isinstance(objective, str):
+        if objective.startswith("max"):
+            return "max"
+        if objective.startswith("min"):
+            return "min"
+    payload_sense = str(payload.get("sense", "")).lower()
+    if payload_sense == "max":
+        return "max"
+    if payload_sense == "min":
+        return "min"
+    if document.get("problem_type") == "9.1.knapsack":
+        return "max"
+    return "min"
+
+
+def quote_body(
+    key: str,
+    document: dict[str, Any],
+    *,
+    faucet_program_id: str | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "idempotency_key": (
+            f"{key}-faucet-{faucet_program_id}" if faucet_program_id else f"{key}-quote"
+        ),
+        "problem_type": document["problem_type"],
+        "problem_schema_version": document["problem_schema_version"],
+        "input": document["payload"],
+        "policy": {
+            "max_price_usdc": os.environ.get("AGENTSOLVE_MAX_PRICE_USDC", "1.00"),
+        },
+    }
+    if faucet_program_id:
+        body["funding_mode"] = "faucet"
+        body["faucet_program_id"] = faucet_program_id
+    return body
+
+
+def routing_fields(quote: dict[str, Any], routing: argparse.Namespace) -> dict[str, Any]:
+    """The explicit routing mode for POST /v1/jobs.
+
+    Default: the quote's default candidate — one engine, one price. The
+    --portfolio flag submits every eligible candidate on the quote so a
+    best-solution-seeking task compares engines instead of trusting one.
+    """
+    if routing.auto_route:
+        return {"auto_route": True}
+    if routing.select:
+        return {"selected_algorithms": list(routing.select)}
+    if routing.portfolio:
+        candidate_ids = [
+            candidate["solver_admission_id"]
+            for candidate in quote.get("candidates", [])
+            if isinstance(candidate, dict) and candidate.get("solver_admission_id")
+        ]
+        if not candidate_ids:
+            raise SystemExit("--portfolio: the quote lists no candidates")
+        if len(candidate_ids) > COHORT_CAP:
+            print(
+                f"--portfolio: quote lists {len(candidate_ids)} candidates; "
+                f"submitting the first {COHORT_CAP} (cohort cap)",
+                file=sys.stderr,
+            )
+            candidate_ids = candidate_ids[:COHORT_CAP]
+        return {"selected_algorithms": candidate_ids}
+    default_candidate = quote.get("default_candidate_solver_admission_id")
+    if isinstance(default_candidate, str) and default_candidate:
+        return {"selected_algorithms": [default_candidate]}
+    return {"auto_route": True}
+
+
+def resolve_stripe_payment(base: str, key: str, quote: dict[str, Any]) -> dict[str, Any]:
+    preconfirmed = os.environ.get("AGENTSOLVE_STRIPE_PAYMENT_INTENT_ID")
+    if preconfirmed:
+        return {"rail": "stripe", "payment_intent_id": preconfirmed}
+    intent = request_json(
+        "POST",
+        f"{base}/v1/payments/stripe/payment-intents",
+        {
+            "quote_token": quote["quote_token"],
+            "job_idempotency_key": f"{key}-job",
+            "idempotency_key": f"{key}-pi",
+        },
+    )
+    status = str(intent.get("status"))
+    if status in CAPTURABLE_INTENT_STATUSES:
+        return {"rail": "stripe", "payment_intent_id": intent["payment_intent_id"]}
+    # FundingError, not a plain exit: an unconfirmed intent must not block
+    # the faucet fallback when the account is enrolled in one.
+    raise FundingError(
+        f"Stripe PaymentIntent {intent.get('payment_intent_id')} is "
+        f"{status!r} and cannot fund a job yet: it must be confirmed on the "
+        "Stripe side first (client_secret "
+        f"{intent.get('client_secret')!r}). Complete that confirmation, then "
+        "re-run with AGENTSOLVE_STRIPE_PAYMENT_INTENT_ID set to the "
+        "confirmed intent id."
+    )
+
+
+def funding_failure_message(
+    requirement: dict[str, Any],
+    available: dict[str, Any],
+    *,
+    cohort_size: int,
+) -> str:
+    """Only recoveries this caller can actually take, from this quote."""
+    lines = [
+        "no fundable payment option; quote offered " + json.dumps(sorted(available))
+    ]
+    guidance = requirement.get("funding_guidance")
+    if guidance:
+        lines.append(f"quote guidance: {guidance}")
+    options = {
+        str(option.get("rail")): option
+        for option in requirement.get("options", [])
+        if isinstance(option, dict)
+    }
+    account_credit_reason = (options.get("account_credit") or {}).get("unavailable_reason")
+    if account_credit_reason == "payment_authority_expired":
+        lines.append(
+            "recovery (requires the billing:write scope): the spend "
+            "authority expired — create a fresh one "
+            "(POST /v1/payments/authorities) and re-run"
+        )
+    elif account_credit_reason == "payment_authority_revoked":
+        lines.append(
+            "recovery (requires the billing:write scope): the spend "
+            "authority was revoked — create a fresh one "
+            "(POST /v1/payments/authorities) and re-run"
+        )
+    elif account_credit_reason:
+        lines.append(f"account_credit unavailable: {account_credit_reason}")
+    if "trial_credit" in available:
+        lines.append(
+            "recovery: the quote lists trial_credit as available — set "
+            "AGENTSOLVE_TRIAL_CREDIT_CODE to a held code and re-run"
+        )
+    if cohort_size > 1 and "stripe" in available:
+        lines.append(
+            "portfolio jobs pay from account credit or trial credit; the "
+            "Stripe rail rejects portfolios by design — fund account credit "
+            "or submit a single candidate"
+        )
+    return "\n".join(lines)
+
+
+def resolve_payment(
+    base: str,
+    key: str,
+    quote: dict[str, Any],
+    *,
+    cohort_size: int = 1,
+) -> dict[str, Any] | None:
+    requirement = quote.get("payment_requirement")
+    if not isinstance(requirement, dict) or requirement.get("requires_payment") is False:
+        return None
+    available = {
+        str(option.get("rail")): option
+        for option in requirement.get("options", [])
+        if isinstance(option, dict) and option.get("available")
+    }
+    if "account_credit" in available:
+        option = available["account_credit"]
+        payment_object = (option.get("instructions") or {}).get("payment_object") or {}
+        validated = payment_object.get("payment_authority_id")
+        # The quote validated this specific authority for the caller, class,
+        # and amount; guessing another one from the account-wide list can
+        # submit an authority the server rejects.
+        if (
+            isinstance(validated, str)
+            and validated.startswith("pauth_")
+            and "..." not in validated
+        ):
+            return {"rail": "account_credit", "payment_authority_id": validated}
+        listing = request_json("GET", f"{base}/v1/payments/authorities")
+        for authority in listing.get("authorities", []):
+            if authority.get("status") == "active" and "account_credit" in (
+                authority.get("rails") or []
+            ):
+                return {
+                    "rail": "account_credit",
+                    "payment_authority_id": authority["payment_authority_id"],
+                }
+    trial_code = os.environ.get("AGENTSOLVE_TRIAL_CREDIT_CODE")
+    if "trial_credit" in available and trial_code:
+        return {"rail": "trial_credit", "trial_credit_code": trial_code}
+    if "stripe" in available and cohort_size <= 1:
+        return resolve_stripe_payment(base, key, quote)
+    raise FundingError(
+        funding_failure_message(requirement, available, cohort_size=cohort_size)
+    )
+
+
+def _drawable(program: dict[str, Any]) -> bool:
+    try:
+        return float(program.get("remaining_grant_usdc") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def discover_faucet_programs(
+    base: str,
+    problem_type: str,
+    quote: dict[str, Any],
+) -> list[str]:
+    """Drawable faucet programs to try in order: the quote's advertisement
+    first (already filtered to this problem type), then the account listing."""
+    program_ids: list[str] = []
+    requirement = quote.get("payment_requirement")
+    if isinstance(requirement, dict):
+        for program in requirement.get("faucet_programs") or []:
+            if isinstance(program, dict) and program.get("program_id") and _drawable(program):
+                program_ids.append(str(program["program_id"]))
+    try:
+        listing = request_json("GET", f"{base}/v1/payments/faucet-programs")
+    except SystemExit:
+        listing = {}
+    for program in listing.get("programs", []):
+        if not isinstance(program, dict) or not program.get("program_id"):
+            continue
+        allowed = program.get("allowed_problem_types")
+        if allowed is not None and problem_type not in allowed:
+            continue
+        if not _drawable(program):
+            continue
+        if str(program["program_id"]) not in program_ids:
+            program_ids.append(str(program["program_id"]))
+    return program_ids
+
+
+def job_body(
+    key: str,
+    quote: dict[str, Any],
+    routing_body: dict[str, Any],
+    payment: dict[str, Any] | None,
+    *,
+    faucet_program_id: str | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "idempotency_key": (
+            f"{key}-faucet-{faucet_program_id}-job" if faucet_program_id else f"{key}-job"
+        ),
+        "quote_token": quote["quote_token"],
+    }
+    body.update(routing_body)
+    effective_hints = quote.get("effective_solver_hints")
+    if effective_hints:
+        body["solver_hints"] = effective_hints
+    if payment is not None:
+        body["payment"] = payment
+    return body
+
+
+def poll_job(
+    base: str,
+    job: dict[str, Any],
+    timeout_seconds: float,
+    *,
+    settled_threshold: int | None = None,
+) -> dict[str, Any]:
+    """Poll until the whole request is finished.
+
+    ``terminal`` is the aggregate signal: a portfolio head can be SETTLED
+    while siblings still run, so status alone must never stop the poll when
+    ``terminal`` is present. Cohort progress is reported as members finish,
+    and the settled threshold stops the wait once at least N members have
+    settled (the remaining members keep running server-side; portfolio
+    cancellation is all-or-none). A poll may observe more than N
+    settlements at once — ranking to exactly the first N by settlement
+    order happens downstream from receipt timestamps.
+    """
+    job_id = job.get("job_id") or job.get("id")
+    if not job_id:
+        raise SystemExit("job response did not include job_id")
+    deadline = time.monotonic() + timeout_seconds
+    observed = job
+    last_progress: tuple[int, int, int] | None = None
+    while time.monotonic() < deadline:
+        terminal = observed.get("terminal")
+        if terminal is True:
+            return observed
+        if terminal is None and str(observed.get("status")) in TERMINAL_STATUSES:
+            return observed
+        members = observed.get("cohort_members") or []
+        if members:
+            terminal_count = sum(1 for member in members if member.get("terminal"))
+            settled_count = sum(
+                1 for member in members if member.get("status") == "SETTLED"
+            )
+            progress = (terminal_count, settled_count, len(members))
+            if progress != last_progress:
+                print(
+                    f"cohort progress: {terminal_count}/{len(members)} members "
+                    f"terminal ({settled_count} settled)",
+                    file=sys.stderr,
+                )
+                last_progress = progress
+            if settled_threshold is not None and settled_count >= settled_threshold:
+                print(
+                    f"settled threshold reached ({settled_count}/{len(members)}); "
+                    "ranking the first settled responses now — unfinished "
+                    "members keep running server-side",
+                    file=sys.stderr,
+                )
+                return observed
+        wait_ms = int(observed.get("recommended_poll_after_ms") or 1000)
+        time.sleep(max(wait_ms, 100) / 1000)
+        observed = request_json("GET", f"{base}/v1/jobs/{job_id}")
+    raise SystemExit(f"job {job_id} did not reach a terminal state within {timeout_seconds}s")
+
+
+def _solver_label(member: dict[str, Any]) -> str:
+    receipt = member.get("routing_receipt")
+    if isinstance(receipt, dict):
+        identity = receipt.get("solver_admission_id") or receipt.get("solver_slot")
+        if identity:
+            return str(identity)
+    return str(member.get("job_id"))
+
+
+def _filename_safe(label: str) -> str:
+    return "".join(char if char.isalnum() or char in "._-" else "-" for char in label)
+
+
+def _settlement_order_key(member: dict[str, Any]) -> tuple[str, int]:
+    """Settlement order: receipt timestamp first, advertisement order as the
+    tie-break; a member without a timestamp sorts last."""
+    receipt = member.get("routing_receipt")
+    recorded_at = (
+        str(receipt.get("recorded_at")) if isinstance(receipt, dict) and receipt.get("recorded_at")
+        else "9999"
+    )
+    position = member.get("cohort_position")
+    return (recorded_at, position if position is not None else 0)
+
+
+def collect_member_results(
+    base: str,
+    members: list[dict[str, Any]],
+    document: dict[str, Any],
+    stem: str,
+    destination: Path,
+    sense: str,
+    *,
+    settled_threshold: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], str | None, list[str]]:
+    """Obtain every ranked member's result separately, then rank them.
+
+    Each settled member in scope has its output fetched on its own and
+    written as its own artifact (`{stem}.{solver}.result.json`), attributed
+    via the member's attested receipt — a portfolio is a benchmarking sweep,
+    and a result that is not separately recorded and attributed is lost to
+    the comparison. With a settled threshold the scope is exactly the first
+    N members by settlement order (receipt timestamps), even when more
+    settled between polls; without one it is every settled member. The best
+    ranked result by objective sense additionally becomes the headline
+    answer. A refunded member contributes nothing. A ranked member whose
+    evidence cannot be written is a failure the caller must see — silently
+    incomplete benchmark evidence is worse than none.
+    """
+    summaries: list[dict[str, Any]] = []
+    best_output: dict[str, Any] = {}
+    best_job_id: str | None = None
+    failures: list[str] = []
+    ordered = sorted(
+        members,
+        key=lambda member: (
+            member.get("cohort_position") if member.get("cohort_position") is not None else 0
+        ),
+    )
+    settled = [member for member in ordered if member.get("status") == "SETTLED"]
+    if settled_threshold is not None:
+        ranked = sorted(settled, key=_settlement_order_key)[:settled_threshold]
+    else:
+        ranked = settled
+    ranked_ids = {member.get("job_id") for member in ranked}
+    for member in ordered:
+        receipt = member.get("routing_receipt")
+        entry: dict[str, Any] = {
+            "job_id": member.get("job_id"),
+            "status": member.get("status"),
+            "solver_admission_id": (
+                receipt.get("solver_admission_id") if isinstance(receipt, dict) else None
+            ),
+            "ranked": member.get("job_id") in ranked_ids,
+        }
+        summaries.append(entry)
+        if not entry["ranked"]:
+            continue
+        output_url = member.get("output_url")
+        if not output_url:
+            failures.append(
+                f"{member.get('job_id')}: settled but advertises no output_url"
+            )
+            continue
+        try:
+            output = request_json("GET", f"{base}{output_url}")
+        except SystemExit as exc:
+            failures.append(f"{member.get('job_id')}: output not readable: {exc}")
+            continue
+        member_path = destination / (
+            f"{stem}.{_filename_safe(_solver_label(member))}.result.json"
+        )
+        member_path.write_text(
+            json.dumps(
+                {
+                    "problem_type": document["problem_type"],
+                    "problem_schema_version": document["problem_schema_version"],
+                    "job_id": member.get("job_id"),
+                    "status": member.get("status"),
+                    "solver_admission_id": entry["solver_admission_id"],
+                    "routing_receipt": receipt,
+                    "output": output,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        entry["result"] = str(member_path)
+        value = output.get("objective_value")
+        entry["objective_value"] = value
+        if best_job_id is None:
+            best_output, best_job_id = output, member.get("job_id")
+            continue
+        incumbent = best_output.get("objective_value")
+        if value is None:
+            continue
+        if incumbent is None or (value > incumbent if sense == "max" else value < incumbent):
+            best_output, best_job_id = output, member.get("job_id")
+    return summaries, best_output, best_job_id, failures
+
+
+def _integral(value: Any) -> Any:
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def write_native_solution(
+    document: dict[str, Any],
+    output: dict[str, Any],
+    stem: str,
+    out_dir: Path,
+) -> str | None:
+    numbering = document.get("node_numbering")
+    if not numbering:
+        return None
+    problem_type = document["problem_type"]
+    if problem_type == "1.1.tsp" and isinstance(output.get("route"), list):
+        tour_path = out_dir / f"{stem}.tour"
+        tour_path.write_text(
+            write_tour(output["route"], tuple(numbering), stem), encoding="utf-8"
+        )
+        return str(tour_path)
+    if problem_type == "1.2.vrp.cvrp" and isinstance(output.get("routes"), list):
+        routes = [
+            [stop["node_id"] for stop in route.get("stops", [])]
+            for route in output["routes"]
+        ]
+        sol_path = out_dir / f"{stem}.sol"
+        sol_path.write_text(
+            write_sol(routes, tuple(numbering), _integral(output.get("objective_value"))),
+            encoding="utf-8",
+        )
+        return str(sol_path)
+    return None
+
+
+def _create_job_with_funding(
+    base: str,
+    key: str,
+    document: dict[str, Any],
+    quote: dict[str, Any],
+    routing: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Resolve funding and create the job, falling back across every
+    drawable faucet program when no ordinary rail is fundable.
+
+    Returns (job, active quote, routing body). Each faucet program gets its
+    own quote and job idempotency keys, and a quote or job failure against
+    one program moves on to the next instead of ending the command.
+    """
+    routing_body = routing_fields(quote, routing)
+    cohort_size = len(routing_body.get("selected_algorithms", [])) or 1
+    if routing.settled_threshold is not None and routing.settled_threshold >= cohort_size:
+        raise SystemExit(
+            f"--settled-threshold {routing.settled_threshold} must be below "
+            f"the cohort size ({cohort_size}); omit it to wait for the whole "
+            "cohort"
+        )
+    try:
+        payment = resolve_payment(base, key, quote, cohort_size=cohort_size)
+    except FundingError as unresolved:
+        attempts: list[str] = []
+        for program_id in discover_faucet_programs(base, document["problem_type"], quote):
+            try:
+                candidate = request_json(
+                    "POST",
+                    f"{base}/v1/quotes",
+                    quote_body(key, document, faucet_program_id=program_id),
+                )
+            except SystemExit as exc:
+                attempts.append(f"{program_id}: quote failed: {exc}")
+                continue
+            requirement = candidate.get("payment_requirement") or {}
+            if requirement.get("requires_payment") is not False:
+                attempts.append(f"{program_id}: quote still requires payment")
+                continue
+            # The faucet quote has its own candidate set; re-resolve the
+            # cohort against it and revalidate the threshold — a program
+            # that restricts solver families can shrink the cohort below N.
+            faucet_routing = routing_fields(candidate, routing)
+            faucet_cohort = len(faucet_routing.get("selected_algorithms", [])) or 1
+            if (
+                routing.settled_threshold is not None
+                and routing.settled_threshold >= faucet_cohort
+            ):
+                attempts.append(
+                    f"{program_id}: cohort resolves to {faucet_cohort} "
+                    f"candidate(s), not above --settled-threshold "
+                    f"{routing.settled_threshold}"
+                )
+                continue
+            try:
+                job = request_json(
+                    "POST",
+                    f"{base}/v1/jobs",
+                    job_body(
+                        key,
+                        candidate,
+                        faucet_routing,
+                        None,
+                        faucet_program_id=program_id,
+                    ),
+                )
+            except SystemExit as exc:
+                attempts.append(f"{program_id}: job creation failed: {exc}")
+                continue
+            print(
+                f"funding fell back to faucet program {program_id}",
+                file=sys.stderr,
+            )
+            return job, candidate, faucet_routing
+        detail = (
+            "; ".join(attempts)
+            if attempts
+            else "no drawable faucet enrollment covers this problem type"
+        )
+        raise SystemExit(f"{unresolved}\nfaucet fallback: {detail}") from unresolved
+    job = request_json(
+        "POST", f"{base}/v1/jobs", job_body(key, quote, routing_body, payment)
+    )
+    return job, quote, routing_body
+
+
+def submit_one(
+    base: str,
+    path: Path,
+    timeout_seconds: float,
+    out_dir: Path | None,
+    routing: argparse.Namespace,
+) -> dict[str, Any]:
+    document = load_document(path)
+    stem = source_stem(path, document)
+    destination = out_dir if out_dir is not None else path.parent
+    destination.mkdir(parents=True, exist_ok=True)
+    key = stable_key(path, document, routing)
+    quote = request_json("POST", f"{base}/v1/quotes", quote_body(key, document))
+    if not (quote.get("quote_id") or quote.get("id")):
+        raise SystemExit(f"{path}: quote response did not include quote_id")
+    job, quote, _ = _create_job_with_funding(base, key, document, quote, routing)
+    observed = poll_job(
+        base, job, timeout_seconds, settled_threshold=routing.settled_threshold
+    )
+
+    members = observed.get("cohort_members") or []
+    selected_job_id: str | None = observed.get("job_id")
+    settled_members: str | None = None
+    cohort: list[dict[str, Any]] = []
+    failures: list[str] = []
+    if members:
+        cohort, output, selected_job_id, failures = collect_member_results(
+            base,
+            members,
+            document,
+            stem,
+            destination,
+            objective_sense(document),
+            settled_threshold=routing.settled_threshold,
+        )
+        settled_count = sum(1 for entry in cohort if entry.get("status") == "SETTLED")
+        settled_members = f"{settled_count}/{len(members)}"
+        if (
+            routing.settled_threshold is not None
+            and settled_count < routing.settled_threshold
+        ):
+            failures.append(
+                f"cohort terminalized with {settled_count} settled member(s); "
+                f"--settled-threshold {routing.settled_threshold} cannot be "
+                "satisfied"
+            )
+    else:
+        output = observed.get("output") if isinstance(observed.get("output"), dict) else {}
+    # No headline or native answer on incomplete evidence: a "best" chosen
+    # from a silently reduced subset looks like a normal result and is
+    # worse than an explicit failure. A previous run's headline files are
+    # removed too — a stale answer surviving a failed rerun reads as
+    # current. Attributed member artifacts written above are preserved.
+    if failures:
+        for stale in (
+            destination / f"{stem}.result.json",
+            destination / f"{stem}.tour",
+            destination / f"{stem}.sol",
+        ):
+            stale.unlink(missing_ok=True)
+        raise SystemExit(
+            f"{path}: cohort evidence incomplete — "
+            + "; ".join(failures)
+            + f"; attributed member artifacts remain in {destination}; no "
+            "headline answer exists for this instance"
+        )
+    result_path = destination / f"{stem}.result.json"
+    record = {
+        "input_document": str(path),
+        "problem_type": document["problem_type"],
+        "problem_schema_version": document["problem_schema_version"],
+        "status": observed.get("status"),
+        "job": observed,
+    }
+    if members:
+        # The headline answer is the selected member's output, not the
+        # cohort head's.
+        record["output"] = output
+        record["selected_job_id"] = selected_job_id
+        record["settled_members"] = settled_members
+        record["cohort"] = cohort
+    result_path.write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    native_solution: str | None = None
+    try:
+        native_solution = write_native_solution(document, output or {}, stem, destination)
+    except NativeFormatError as exc:
+        print(f"{path}: native solution not written: {exc}", file=sys.stderr)
+    summary = {
+        "input_document": str(path),
+        "status": observed.get("status"),
+        "objective_value": (output or {}).get("objective_value"),
+        "result": str(result_path),
+        "native_solution": native_solution,
+    }
+    if members:
+        summary["selected_job_id"] = selected_job_id
+        summary["settled_members"] = settled_members
+        summary["cohort"] = cohort
+    return summary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Submit translated canonical documents through quote -> job -> "
+            "poll. Routing default: the quote's default candidate (one "
+            "engine, one price); --portfolio runs every eligible candidate "
+            "(up to 10), polls the whole cohort with N/M progress, writes "
+            "one attributed result per settled member, and emits the best "
+            "by objective sense, at cohort-size times the price."
+        )
+    )
+    parser.add_argument("documents", nargs="+", type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--portfolio",
+        action="store_true",
+        help=(
+            "run every eligible candidate on the quote (cohort cap 10), "
+            "write one attributed result artifact per settled member, and "
+            "emit the best by objective sense; price multiplies by cohort "
+            "size. Pays from account credit or trial credit only."
+        ),
+    )
+    mode.add_argument(
+        "--select",
+        nargs="+",
+        metavar="ADMISSION_ID",
+        help="run an explicit candidate cohort (1 id for a single engine, 2-10 for a portfolio)",
+    )
+    mode.add_argument(
+        "--auto-route",
+        action="store_true",
+        help="use the platform's deterministic catalog-default selection",
+    )
+    parser.add_argument(
+        "--settled-threshold",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "stop waiting once N cohort members have settled and rank "
+            "exactly the first N responses by settlement order; unfinished "
+            "members keep running server-side (portfolio cancellation is "
+            "all-or-none). Requires a multi-member cohort and N below the "
+            "cohort size."
+        ),
+    )
+    parser.add_argument("--base-url", default=os.environ.get("AGENTSOLVE_BASE_URL"))
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="directory for result/native-solution files (default: beside each document)",
+    )
+    parser.add_argument("--poll-timeout", type=float, default=900.0)
+    args = parser.parse_args()
+    if not args.base_url:
+        raise SystemExit("set AGENTSOLVE_BASE_URL or pass --base-url")
+    if args.settled_threshold is not None:
+        if args.settled_threshold < 1:
+            raise SystemExit("--settled-threshold must be at least 1")
+        if not args.portfolio and not (args.select and len(args.select) > 1):
+            raise SystemExit(
+                "--settled-threshold applies to multi-member cohorts; pass "
+                "--portfolio or --select with two or more ids"
+            )
+    base = args.base_url.rstrip("/")
+    summaries = [
+        submit_one(base, path, args.poll_timeout, args.out_dir, args)
+        for path in args.documents
+    ]
+    print(json.dumps(summaries, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

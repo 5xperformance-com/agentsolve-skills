@@ -6,7 +6,7 @@ Canonical schema versions:
 - Output: `1.1.tsp.output.v1`
 
 Use `1.1.tsp` when one vehicle or one agent must visit each required node once
-and return to the start or finish a single tour. Common user wording includes
+and return to the start. Common user wording includes
 "route through all stops" and "visit every customer once and return".
 
 For platform transport, pair this file with
@@ -16,15 +16,19 @@ For platform transport, pair this file with
 
 ## Formulation Recipe
 
-- Inputs: stable node IDs, a complete directed distance or cost matrix, and a
-  start/depot node when required by the schema.
+- Inputs: stable node IDs, a directed distance or cost map, and an optional
+  start node. A missing directed edge is unavailable, not zero.
 - Objective direction: minimize total route distance or cost.
 - Units: keep every matrix entry in the same unit; seconds, minutes, meters,
   miles, and currency costs must not be mixed.
 - Normalization: include every node exactly once in the input set; use integer
   scaled costs when source data is decimal.
-- Complexity tier: use node count and matrix completeness as the first sizing
-  check; see `docs/engine/OPTIMIZATION_MODELLING_BRIEF.md`.
+- Complexity tier bands: `XS` node_count <= 10, `S` 11-25, `M` 26-60,
+  `L` 61-2,500. Node count and matrix completeness are the first sizing
+  check.
+- The schema accepts at most 2,500 nodes. The quote descriptor reports node
+  count, directed arc count, and matrix density; the tier itself is not a
+  latency or tour-quality guarantee.
 
 ## Boundary
 
@@ -36,12 +40,15 @@ Typed deferral guidance:
 
 | Required semantic | Action |
 |---|---|
-| multiple vehicles or capacity | consider `1.2.vrp.cvrp` when one depot and hard capacities fit |
-| hard arrival windows with service times | consider the CVRP launch subset when all fields fit |
-| pickup/delivery pairing | code `pickup_delivery_vrp`, nearest_supported_subset `1.2.vrp.cvrp`, roadmap_status `deferred` |
+| multiple tours | typed deferral code `tsp_multiple_tours`; consider `1.2.vrp.cvrp` when its route semantics fit |
+| capacity | typed deferral code `tsp_capacity_constraints`; consider `1.2.vrp.cvrp` when its route semantics fit |
+| hard arrival windows or service times | typed deferral code `tsp_time_windows`; consider the CVRP hard-window subset when all fields fit |
+| optional nodes | typed deferral code `tsp_optional_nodes`; the nearest TSP subset visits every node |
+| prize collecting | typed deferral code `tsp_prize_collecting`; the nearest TSP subset has no prizes |
+| pickup/delivery pairing | reclassify to `1.2.vrp.cvrp` input v4 and declare `pickup_delivery_pairs` per its class reference; pre-v4 CVRP schema versions defer this as `pickup_delivery_vrp` |
 | split delivery | code `split_delivery_vrp`, nearest_supported_subset `1.2.vrp.cvrp`, roadmap_status `deferred` |
-| several depots | code `multi_depot_vrp`, nearest_supported_subset `1.2.vrp.cvrp`, roadmap_status `deferred` |
-| soft windows | code `soft_time_windows_vrp`, nearest_supported_subset `1.2.vrp.cvrp`, roadmap_status `deferred` |
+| several depots | reclassify to `1.2.vrp.cvrp` input v4 and declare `depots` with per-vehicle start/end per its class reference; pre-v4 CVRP schema versions defer this as `multi_depot_vrp` |
+| soft windows | reclassify to `1.2.vrp.cvrp` input v4 and declare `soft_time_windows` with priced lateness per its class reference; pre-v4 CVRP schema versions defer this as `soft_time_windows_vrp` |
 | time-varying travel | code `time_dependent_travel`, nearest_supported_subset `1.2.vrp.cvrp`, roadmap_status `deferred` |
 
 ## Result Interpretation
