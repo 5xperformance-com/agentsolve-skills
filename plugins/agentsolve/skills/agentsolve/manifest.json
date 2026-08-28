@@ -2,7 +2,7 @@
   "adoption_surface": "agentsolve-stage0",
   "release_tag_pattern": "agentsolve-stage0-adoption-cpl-v<canonical-language-version>-v<adoption-semver>",
   "canonical_source": "docs/adoption/stage0/source",
-  "adoption_semver": "0.14.0",
+  "adoption_semver": "0.14.1",
   "supply_reference_version": "sprint13.launch-gate.v1",
   "skill_projection": "skills/agentsolve",
   "provider_neutral_bundle": "docs/adoption/stage0/bundle",

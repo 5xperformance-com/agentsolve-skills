@@ -205,26 +205,39 @@ def quote_constraints(routing: argparse.Namespace) -> dict[str, Any] | None:
     return constraints or None
 
 
+def resolved_max_price_usdc(routing: argparse.Namespace) -> str:
+    """The price ceiling this invocation quotes under, flag over env."""
+    return (
+        getattr(routing, "max_price_usdc", None)
+        or os.environ.get("AGENTSOLVE_MAX_PRICE_USDC")
+        or "1.00"
+    )
+
+
 def stable_key(path: Path, document: dict[str, Any], routing: argparse.Namespace) -> str:
-    """Deterministic per (document, constraints, routing mode).
+    """Deterministic per (document, constraints, price ceiling, routing).
 
     The idempotency key covers everything that changes what the platform
-    executes, so re-running an identical command replays the previous
-    result while changing the time budget, constraints, or routing mode
-    executes a fresh paid job. The client-side source filename stays out:
-    renaming a file must not buy a re-execution. --rerun salts the key
-    for a deliberate paid re-roll of an identical submission.
+    is asked to do, so re-running an identical command replays the
+    previous result while changing the time budget, constraints, price
+    ceiling, or routing mode executes fresh. Nothing about the client-side
+    filename enters the key — renaming a file must not buy a
+    re-execution — so the readable prefix is the problem type, not the
+    stem. --rerun salts the key for a deliberate paid re-roll of an
+    identical submission.
     """
+    del path
     hashed_document = {k: v for k, v in document.items() if k != "source_file"}
     parts = [
         json.dumps(hashed_document, sort_keys=True, separators=(",", ":")),
         json.dumps(quote_constraints(routing) or {}, sort_keys=True, separators=(",", ":")),
+        resolved_max_price_usdc(routing),
         routing_signature(routing),
     ]
     if getattr(routing, "rerun", False):
         parts.append(f"rerun-{time.time_ns()}")
     digest = hashlib.sha256("\x00".join(parts).encode()).hexdigest()
-    return f"{source_stem(path, document)}-{digest[:12]}"
+    return f"{document['problem_type']}-{digest[:16]}"
 
 
 def objective_sense(document: dict[str, Any]) -> str:
@@ -1143,6 +1156,13 @@ def submit_one(
     return summary
 
 
+def render_summaries(summaries: list[dict[str, Any]], *, machine: bool) -> str:
+    """The final stdout: one compact line for machines, indented for eyes."""
+    if machine:
+        return json.dumps(summaries, sort_keys=True, separators=(",", ":"))
+    return json.dumps(summaries, indent=2, sort_keys=True)
+
+
 def _price_total(summaries: list[dict[str, Any]]) -> str | None:
     from decimal import Decimal, InvalidOperation
 
@@ -1295,14 +1315,18 @@ def main() -> int:
     output_mode.add_argument(
         "--quiet",
         action="store_true",
-        help="suppress progress and heartbeat lines (warnings still print)",
+        help=(
+            "suppress progress and heartbeat lines; stdout keeps the "
+            "human-indented JSON summary"
+        ),
     )
     output_mode.add_argument(
         "--json",
         action="store_true",
         help=(
-            "machine mode: stdout carries only the final JSON summary; all "
-            "progress, heartbeat, and price lines are suppressed"
+            "machine mode: stdout is exactly one compact JSON line (the "
+            "summary), with all progress, heartbeat, and price chatter "
+            "suppressed"
         ),
     )
     parser.add_argument("--base-url", default=os.environ.get("AGENTSOLVE_BASE_URL"))
@@ -1374,7 +1398,7 @@ def main() -> int:
                 except SystemExit as exc:
                     failures.append(str(exc))
                     summaries.append({"input_document": str(path), "error": str(exc)})
-    print(json.dumps(summaries, indent=2, sort_keys=True))
+    print(render_summaries(summaries, machine=args.json))
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
