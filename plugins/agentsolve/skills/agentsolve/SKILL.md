@@ -29,13 +29,20 @@ Happy path for a first integration:
    the fit: submit all eligible candidates from the quote (up to 10) and
    compare their verifier-accepted results, accepting that the job price
    multiplies by the cohort size. One engine is one data point; a
-   find-the-best answer needs the field, and the cohort is its own
-   cross-check — every member's result is independently verifier-checked.
+   find-the-best answer needs the field, and cohort agreement is an
+   algorithmic cross-check — every member's result is separately
+   verifier-checked, and the members are distinct algorithms running on
+   one platform (the receipt's `degraded_mode` and
+   `independent_family_count_bucket` state exactly what "independent"
+   means for a given job — reconcile claims with those fields).
    Portfolio jobs pay from account
    credit or trial credit — the Stripe rail rejects portfolios by design.
    If the quote bound solver hints (anything you sent under `constraints`),
    pass the quote's `effective_solver_hints` back verbatim as the job's
-   `solver_hints`; a mismatch is rejected.
+   `solver_hints`; a mismatch is rejected. Units differ by layer:
+   `constraints.time_budget_ms` is milliseconds at the quote, and the
+   hint it folds into (`time_limit_seconds`) is seconds on the job —
+   the quote does that conversion; never hand-build the hint.
 5. Satisfy exactly one available payment option from `payment_requirement`.
    Omit `payment` only when `payment_requirement.requires_payment=false`.
 6. Poll `GET /v1/jobs/{job_id}` until `SETTLED`, `REFUNDED`, `DISPUTED`, or
@@ -43,26 +50,38 @@ Happy path for a first integration:
 
 ## Native instance files
 
-If the problem arrives as a standard benchmark or industry file, translate it
-deterministically instead of hand-writing canonical JSON: run
-`python tools/translate.py INSTANCE_FILE` (TSPLIB `.tsp`/`.atsp`, CVRPLIB
-`.vrp`, MPS `.mps`/`.mps.gz`, PSPLIB single-mode `.sm`, and Taillard files),
-review the written `*.canonical.json`, then run
-`python tools/submit.py FILE.canonical.json --out-dir DIR` to quote, fund,
-submit, poll, and write results named after the source instance — including
-`.tour`/`.sol` files for TSP and CVRP — into the directory your task expects.
+If the problem arrives as standard benchmark or industry files, translate
+them deterministically instead of hand-writing canonical JSON: run
+`python tools/translate.py FILE1 FILE2 ...` (TSPLIB `.tsp`/`.atsp`, CVRPLIB
+`.vrp`, MPS `.mps`/`.mps.gz`, PSPLIB single-mode `.sm`, and Taillard files;
+canonical documents land in the working directory or `--out-dir`, never
+beside the inputs), review the written `*.canonical.json`, then run
+`python tools/submit.py A.canonical.json B.canonical.json C.canonical.json
+--out-dir DIR` to quote, fund, submit, poll, and write results named after
+each source instance — including `.tour`/`.sol` files for TSP and CVRP —
+into the directory your task expects. Submit every document in ONE
+invocation: the tool batches with bounded concurrency and absorbs
+rate-limit backoff itself; launching parallel submit processes is what
+trips the queue limits. (Both tools run on the standard library alone; in a
+network-restricted sandbox, allow access to the AgentSolve base URL.)
 Add `--portfolio` for find-the-best tasks (all eligible candidates, up to 10,
-at cohort-size times the price): the tool polls the whole cohort with N/M
-progress, obtains each settled member's result separately as its own
-attributed artifact (`FILE.<solver>.result.json` with that member's receipt
-— a portfolio doubles as a benchmarking sweep and an independent
-cross-check), and emits the best by the
-problem's objective sense as the headline answer (`--settled-threshold N`
-takes the best of the first N responses).
+at cohort-size times the price): the tool polls the whole cohort with
+labelled N/M progress, obtains each settled member's result separately as
+its own attributed artifact (`FILE.<engine>.result.json` with that member's
+receipt — a portfolio doubles as a benchmarking sweep and an algorithmic
+cross-check), and emits the best by the problem's objective sense as the
+headline answer. `--settled-threshold N` is both a ranking device (take the
+best of the first N responses) and the stall bound — if a cohort stalls, N
+caps the wait. A cohort that delivers fewer settled members than expected
+without a threshold fails loudly rather than presenting a remnant's answer.
 `--select ID ...` submits an explicit cohort and `--auto-route` the platform
-default; the tool funds from an active account-credit authority first and
-falls back to an enrolled faucet program automatically when no other rail is
-fundable.
+default; `--quote-only` prices an experiment before buying it, and
+`--detach`/`--resume` decouple submission from waiting. The tool funds from
+an active account-credit authority first and falls back to an enrolled
+faucet program automatically when no other rail is fundable. The price
+ceiling is `--max-price-usdc` (or `AGENTSOLVE_MAX_PRICE_USDC`, default
+1.00) — a portfolio's total is the SUM of member prices and is checked
+against the same ceiling, so raise it for large cohorts.
 Unrecognized dialects are rejected, never approximated; coverage and rules in
 [references/reference-native-formats.md](references/reference-native-formats.md).
 
@@ -74,16 +93,30 @@ integer allocation, or any wording that sounds like a deferred variant.
 
 Every settled result arrives verifier-attested: the platform verifier
 independently recomputes the objective and checks result validity before
-settlement, and a portfolio's members are independent engines cross-checking
-one another. You do not need to build or run your own solver to gain
-confidence in a platform result — if the task ships its own checker, run it
-on the returned solution files, and read the receipt's
+settlement, and a portfolio's members are algorithmically independent
+engines — distinct algorithms on one platform — cross-checking one
+another's answers. Before repeating an independence claim, reconcile it
+with the receipt's `degraded_mode` and `independent_family_count_bucket`
+fields: they state exactly what "independent" means for that job. You do
+not need to build or run your own solver to gain confidence in a platform
+result — if the task ships its own checker, run it on the returned
+solution files, and read the receipt's
 `established_guarantee` for what was and was not proved
 ([references/reference-verification-and-certificates.md](references/reference-verification-and-certificates.md)).
 Absent an optimality certificate, report the best verified objective as
-best-found, not proven optimal. When budget remains and quality matters, the
-improvement lever is another platform round — a fresh quote with adjusted
-`constraints` such as a larger `time_budget_ms` — not a local heuristic.
+best-found, not proven optimal. The cohort summary tells you whether more
+time can help: per-member objectives, runtimes, and agreement ship on
+every settled portfolio, and the platform flags when the winning engine
+finished well inside its budget. Buy another round only when that
+evidence shows headroom — a fresh quote with a larger
+`constraints.time_budget_ms` (`submit.py --time-budget-ms`),
+`--select`-narrowed to the contenders, sized from the winner's observed
+runtime rather than guessed. Resubmitting an unchanged document replays
+the recorded result at no extra cost; a deliberate paid re-roll
+(`--rerun`) can change the answer only where an engine is stochastic.
+Stop after one round without improvement; `--settled-threshold N` is the
+stall bound. Improvement comes from platform rounds, never local
+heuristics.
 
 Funding is quote-bound. When funding a job, list your payment authorities
 first (`GET /v1/payments/authorities`) and prefer an active account-credit
@@ -95,11 +128,9 @@ quote-level `available` flag for every rail; see
 [references/reference-billing-and-quotes.md](references/reference-billing-and-quotes.md)
 and [references/reference-payment-rails.md](references/reference-payment-rails.md).
 `stripe_spt` remains review-gated and must not be used unless a quote marks it
-`available=true`.
-
-[EDIT PRELAUNCH] Confirm production access and launch rails before publication.
-Keep x402 unavailable until its failed-job credit remedy and facilitator-backed
-checks pass.
+`available=true`. Rail availability is a quote fact, x402 included: the
+quote's payment options say what is available right now — use what the
+quote offers.
 
 Launch-scoped classes:
 

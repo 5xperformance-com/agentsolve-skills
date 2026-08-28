@@ -27,8 +27,6 @@ This file reflects the implemented contract. Runtime discovery and the quote's
 submit. `stripe_spt` is review-gated, disabled by default, and appears only when
 quote-level discovery marks it `available=true`.
 
-[EDIT PRELAUNCH] Confirm production access and launch rails before publication.
-
 For account-credit flows, a human/account owner first buys credit through
 `POST /v1/payments/account-credit/top-ups` and confirms the returned Stripe
 PaymentIntent outside AgentSolve's card-data boundary; that top-up endpoint
@@ -70,8 +68,8 @@ another quote or job; replayed proofs are rejected.
 x402 settles USDC before job persistence and execution; it cannot be voided
 like a card authorization. A failed or refunded x402 job is remedied with
 spendable account credit; the on-chain transfer itself is not reversed.
-[EDIT PRELAUNCH] Keep x402 unavailable until its failed-job account-credit
-remedy and facilitator-backed checks pass.
+Whether x402 is available for a given quote is a quote fact: read the
+quote's payment options and use what the quote offers.
 
 For Stripe card flows, agents should never collect raw card data. They should
 read the quote's `payment_requirement`, call
@@ -83,8 +81,7 @@ creating the job. Only do this when the quote marks the Stripe option
 mark Stripe unavailable and the preflight endpoint will reject them. The
 implemented third-party payout service targets Stripe Connect Custom; agents do
 not choose provider account types. Current first-party jobs record provider
-payout `NOT_APPLICABLE`. [EDIT PRELAUNCH] Keep third-party paid supply closed
-until the payout-release worker and live transfer checks pass.
+payout `NOT_APPLICABLE`.
 
 For review-gated Stripe SPT flows, agents must follow the exact quote-level
 `stripe_spt` option and submit only the request-only `shared_payment_token`

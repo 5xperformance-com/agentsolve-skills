@@ -12,6 +12,13 @@ any `solver_hints_hash`. When the quote bound hints (anything sent under
 `constraints`, including `time_budget_ms`), the response's
 `effective_solver_hints` is the exact object the job must resubmit as
 `solver_hints`; divergence is rejected with `QUOTE_HINTS_MISMATCH`.
+The two layers use different names and units for the same bound:
+`constraints.time_budget_ms` (milliseconds, quote-side) folds into the
+hint `time_limit_seconds` (seconds, job-side) — the quote does the
+conversion; never hand-build the hint. A larger `time_budget_ms` does not
+change the quote price today: solve time is not yet a priced dimension,
+so a bigger budget costs the same as a small one and price is no signal
+of whether more time is worth buying — read the receipts instead.
 It also returns the exact-input
 `instance_descriptor`, a top-level `estimate_basis`, and candidate
 `evidence_scope_state` values. `catalog_projection` is an estimate, not a

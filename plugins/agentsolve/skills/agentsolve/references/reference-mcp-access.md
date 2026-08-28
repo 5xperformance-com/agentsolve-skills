@@ -51,6 +51,10 @@ older client headers.
 - `agentsolve.transparency.changes`
 - `agentsolve.transparency.job`
 
+Engine names are readable before buying: `agentsolve.solvers.list` is the
+solver-catalog read path (there is no `GET /v1/solvers` REST route), and
+every quote candidate carries `solver_slot` and `solver_version`.
+
 ## Polling-First Behavior
 
 `agentsolve.jobs.create` returns `job_id`, `status`, `terminal`,

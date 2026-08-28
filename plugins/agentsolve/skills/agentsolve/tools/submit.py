@@ -33,16 +33,38 @@ subset is not evidence. The job price multiplies by the cohort size, and portfol
 pay from account credit or trial credit only; the Stripe rail rejects
 portfolios by design.
 
+Quote constraints: `--time-budget-ms N` buys the engines a solve-time
+budget (the quote echoes the effective hints it bound), and
+`--constraints JSON` passes any other quote constraint object. Both are
+part of the idempotency key: re-quoting the same document with a larger
+budget executes a fresh paid job instead of silently replaying the cheap
+one. `--rerun` deliberately re-executes an identical submission (a paid
+re-roll); without it, re-running the same command replays the previous
+result at no extra cost.
+
+`--quote-only` prices the submission (candidates, engines, price
+ceiling, payment options) without creating a job. `--detach` creates the
+job and exits immediately, printing the job id and the exact resume
+command; `--resume JOB_ID` (with the same document) polls an existing
+job to completion and writes results. `--receipts-dir` separates the
+per-member receipt artifacts from the deliverables directory.
+
 Usage:
     python tools/submit.py DOC.canonical.json [MORE.canonical.json ...]
         [--portfolio | --select ADMISSION_ID [ADMISSION_ID ...] | --auto-route]
         [--settled-threshold N]
-        [--base-url URL] [--out-dir DIR] [--poll-timeout SECONDS]
+        [--time-budget-ms N] [--constraints JSON] [--rerun]
+        [--quote-only | --detach | --resume JOB_ID]
+        [--max-price-usdc X] [--max-concurrency N] [--quiet | --json]
+        [--base-url URL] [--out-dir DIR] [--receipts-dir DIR]
+        [--poll-timeout SECONDS]
 
 Environment: AGENTSOLVE_BASE_URL, AGENTSOLVE_API_TOKEN, AGENTSOLVE_DEV_SCOPES,
 AGENTSOLVE_TRIAL_CREDIT_CODE, AGENTSOLVE_STRIPE_PAYMENT_INTENT_ID (an already
-confirmed intent for the Stripe rail), AGENTSOLVE_MAX_PRICE_USDC (default
-"1.00").
+confirmed intent for the Stripe rail), AGENTSOLVE_MAX_PRICE_USDC (the price
+ceiling per quote — default "1.00"; a portfolio's total is the SUM of member
+prices and is checked against this same ceiling at job creation, so raise it
+for large cohorts or pass --max-price-usdc).
 """
 
 from __future__ import annotations
@@ -51,20 +73,50 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from translate import NativeFormatError, write_sol, write_tour
+try:
+    from translate import NativeFormatError, write_sol, write_tour
+except ModuleNotFoundError:  # imported from outside tools/ (wrappers, tests)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from translate import NativeFormatError, write_sol, write_tour
 
 TERMINAL_STATUSES = {"SETTLED", "REFUNDED", "DISPUTED", "SUPERSEDED"}
 CAPTURABLE_INTENT_STATUSES = {"requires_capture", "succeeded"}
 COHORT_CAP = 10
+MAX_REQUEST_ATTEMPTS = 4
+HEARTBEAT_SECONDS = 30.0
 
 
 class FundingError(SystemExit):
     """No payment option was fundable; the message enumerates recoveries."""
+
+
+def _retryable_rate_limit(status: int, detail: str) -> bool:
+    """A 429 whose body does not explicitly say retryable=false."""
+    if status != 429:
+        return False
+    try:
+        parsed = json.loads(detail)
+    except json.JSONDecodeError:
+        return True
+
+    def find(node: Any) -> bool | None:
+        if isinstance(node, dict):
+            if "retryable" in node:
+                return bool(node["retryable"])
+            for value in node.values():
+                found = find(value)
+                if found is not None:
+                    return found
+        return None
+
+    found = find(parsed)
+    return True if found is None else found
 
 
 def request_json(method: str, url: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -78,13 +130,36 @@ def request_json(method: str, url: str, body: dict[str, Any] | None = None) -> d
     scopes = os.environ.get("AGENTSOLVE_DEV_SCOPES")
     if scopes:
         headers["x-agentsolve-scopes"] = scopes
-    req = request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with request.urlopen(req, timeout=60) as response:
-            return json.loads(response.read().decode())
-    except error.HTTPError as exc:
-        detail = exc.read().decode()
-        raise SystemExit(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
+    attempt = 0
+    while True:
+        attempt += 1
+        req = request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with request.urlopen(req, timeout=60) as response:
+                return json.loads(response.read().decode())
+        except error.HTTPError as exc:
+            detail = exc.read().decode()
+            if _retryable_rate_limit(exc.code, detail) and attempt < MAX_REQUEST_ATTEMPTS:
+                retry_after = exc.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else float(2**attempt)
+                except ValueError:
+                    delay = float(2**attempt)
+                delay = min(delay, 30.0) + random.uniform(0.0, 0.5)
+                print(
+                    f"HTTP 429 on {method} {url}; retrying in {delay:.1f}s "
+                    f"(attempt {attempt}/{MAX_REQUEST_ATTEMPTS})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            raise SystemExit(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
+        except error.URLError as exc:
+            raise SystemExit(
+                f"{method} {url} failed before any HTTP response: {exc.reason}. "
+                "If this runs in a network-restricted sandbox, allow access to "
+                "the AgentSolve base URL and re-run."
+            ) from exc
 
 
 def load_document(path: Path) -> dict[str, Any]:
@@ -118,16 +193,37 @@ def routing_signature(routing: argparse.Namespace) -> str:
     return "default"
 
 
+def quote_constraints(routing: argparse.Namespace) -> dict[str, Any] | None:
+    """The quote constraints object this invocation asks for."""
+    constraints: dict[str, Any] = {}
+    extra = getattr(routing, "constraints", None)
+    if isinstance(extra, dict):
+        constraints.update(extra)
+    time_budget_ms = getattr(routing, "time_budget_ms", None)
+    if time_budget_ms is not None:
+        constraints["time_budget_ms"] = time_budget_ms
+    return constraints or None
+
+
 def stable_key(path: Path, document: dict[str, Any], routing: argparse.Namespace) -> str:
-    """Deterministic per (payload, routing mode) so re-running the same mode
-    replays, while a different mode executes instead of replaying the
-    previous job under the same idempotency key."""
-    material = (
-        json.dumps(document["payload"], sort_keys=True, separators=(",", ":")).encode()
-        + b"\x00"
-        + routing_signature(routing).encode()
-    )
-    digest = hashlib.sha256(material).hexdigest()
+    """Deterministic per (document, constraints, routing mode).
+
+    The idempotency key covers everything that changes what the platform
+    executes, so re-running an identical command replays the previous
+    result while changing the time budget, constraints, or routing mode
+    executes a fresh paid job. The client-side source filename stays out:
+    renaming a file must not buy a re-execution. --rerun salts the key
+    for a deliberate paid re-roll of an identical submission.
+    """
+    hashed_document = {k: v for k, v in document.items() if k != "source_file"}
+    parts = [
+        json.dumps(hashed_document, sort_keys=True, separators=(",", ":")),
+        json.dumps(quote_constraints(routing) or {}, sort_keys=True, separators=(",", ":")),
+        routing_signature(routing),
+    ]
+    if getattr(routing, "rerun", False):
+        parts.append(f"rerun-{time.time_ns()}")
+    digest = hashlib.sha256("\x00".join(parts).encode()).hexdigest()
     return f"{source_stem(path, document)}-{digest[:12]}"
 
 
@@ -167,6 +263,8 @@ def quote_body(
     key: str,
     document: dict[str, Any],
     *,
+    constraints: dict[str, Any] | None = None,
+    max_price_usdc: str | None = None,
     faucet_program_id: str | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
@@ -177,9 +275,13 @@ def quote_body(
         "problem_schema_version": document["problem_schema_version"],
         "input": document["payload"],
         "policy": {
-            "max_price_usdc": os.environ.get("AGENTSOLVE_MAX_PRICE_USDC", "1.00"),
+            "max_price_usdc": (
+                max_price_usdc or os.environ.get("AGENTSOLVE_MAX_PRICE_USDC", "1.00")
+            ),
         },
     }
+    if constraints:
+        body["constraints"] = constraints
     if faucet_program_id:
         body["funding_mode"] = "faucet"
         body["faucet_program_id"] = faucet_program_id
@@ -407,31 +509,57 @@ def poll_job(
     timeout_seconds: float,
     *,
     settled_threshold: int | None = None,
+    label: str = "job",
+    quiet: bool = False,
 ) -> dict[str, Any]:
     """Poll until the whole request is finished.
 
     ``terminal`` is the aggregate signal: a portfolio head can be SETTLED
     while siblings still run, so status alone must never stop the poll when
-    ``terminal`` is present. Cohort progress is reported as members finish,
-    and the settled threshold stops the wait once at least N members have
-    settled (the remaining members keep running server-side; portfolio
-    cancellation is all-or-none). A poll may observe more than N
-    settlements at once — ranking to exactly the first N by settlement
-    order happens downstream from receipt timestamps.
+    ``terminal`` is present. Progress lines are labelled with the instance
+    so concurrent submissions stay legible, a heartbeat reports elapsed
+    time during silent stretches, and the settled threshold stops the wait
+    once at least N members have settled (the remaining members keep
+    running server-side; portfolio cancellation is all-or-none). A poll
+    may observe more than N settlements at once — ranking to exactly the
+    first N by settlement order happens downstream from receipt
+    timestamps.
     """
+
+    def note(message: str) -> None:
+        if not quiet:
+            print(f"{label}: {message}", file=sys.stderr)
+
     job_id = job.get("job_id") or job.get("id")
     if not job_id:
         raise SystemExit("job response did not include job_id")
-    deadline = time.monotonic() + timeout_seconds
+    started = time.monotonic()
+    deadline = started + timeout_seconds
     observed = job
     last_progress: tuple[int, int, int] | None = None
+    last_note = started
+
+    def finished(final: dict[str, Any]) -> dict[str, Any]:
+        members = final.get("cohort_members") or []
+        if members:
+            terminal_count = sum(1 for member in members if member.get("terminal"))
+            settled_count = sum(
+                1 for member in members if member.get("status") == "SETTLED"
+            )
+            note(
+                f"cohort complete: {terminal_count}/{len(members)} members "
+                f"terminal ({settled_count} settled)"
+            )
+        return final
+
     while time.monotonic() < deadline:
         terminal = observed.get("terminal")
         if terminal is True:
-            return observed
+            return finished(observed)
         if terminal is None and str(observed.get("status")) in TERMINAL_STATUSES:
-            return observed
+            return finished(observed)
         members = observed.get("cohort_members") or []
+        now = time.monotonic()
         if members:
             terminal_count = sum(1 for member in members if member.get("terminal"))
             settled_count = sum(
@@ -439,20 +567,25 @@ def poll_job(
             )
             progress = (terminal_count, settled_count, len(members))
             if progress != last_progress:
-                print(
+                note(
                     f"cohort progress: {terminal_count}/{len(members)} members "
-                    f"terminal ({settled_count} settled)",
-                    file=sys.stderr,
+                    f"terminal ({settled_count} settled)"
                 )
                 last_progress = progress
+                last_note = now
             if settled_threshold is not None and settled_count >= settled_threshold:
-                print(
+                note(
                     f"settled threshold reached ({settled_count}/{len(members)}); "
                     "ranking the first settled responses now — unfinished "
-                    "members keep running server-side",
-                    file=sys.stderr,
+                    "members keep running server-side"
                 )
                 return observed
+        if now - last_note >= HEARTBEAT_SECONDS:
+            note(
+                f"still waiting on {job_id} ({int(now - started)}s elapsed, "
+                f"status {observed.get('status')})"
+            )
+            last_note = now
         wait_ms = int(observed.get("recommended_poll_after_ms") or 1000)
         time.sleep(max(wait_ms, 100) / 1000)
         observed = request_json("GET", f"{base}/v1/jobs/{job_id}")
@@ -460,9 +593,21 @@ def poll_job(
 
 
 def _solver_label(member: dict[str, Any]) -> str:
+    """The engine's human name: backend and version off the member's own
+    receipt, with the admission id as the fallback identity."""
     receipt = member.get("routing_receipt")
     if isinstance(receipt, dict):
-        identity = receipt.get("solver_admission_id") or receipt.get("solver_slot")
+        backend = receipt.get("solver_backend")
+        version = receipt.get("solver_version")
+        if backend and version:
+            return f"{backend}-{version}"
+        if backend:
+            return str(backend)
+        identity = (
+            receipt.get("solver_slot")
+            or receipt.get("engine_lineage_id")
+            or receipt.get("solver_admission_id")
+        )
         if identity:
             return str(identity)
     return str(member.get("job_id"))
@@ -497,15 +642,16 @@ def collect_member_results(
     """Obtain every ranked member's result separately, then rank them.
 
     Each settled member in scope has its output fetched on its own and
-    written as its own artifact (`{stem}.{solver}.result.json`), attributed
-    via the member's attested receipt — a portfolio is a benchmarking sweep,
-    and a result that is not separately recorded and attributed is lost to
-    the comparison. With a settled threshold the scope is exactly the first
-    N members by settlement order (receipt timestamps), even when more
-    settled between polls; without one it is every settled member. The best
-    ranked result by objective sense additionally becomes the headline
-    answer. A refunded member contributes nothing. A ranked member whose
-    evidence cannot be written is a failure the caller must see — silently
+    written as its own artifact (`{stem}.{engine}.result.json`, named by
+    the engine off the member's own receipt), attributed via that receipt
+    — a portfolio is a benchmarking sweep, and a result that is not
+    separately recorded and attributed is lost to the comparison. With a
+    settled threshold the scope is exactly the first N members by
+    settlement order (receipt timestamps), even when more settled between
+    polls; without one it is every settled member. The best ranked result
+    by objective sense additionally becomes the headline answer. A
+    refunded member contributes nothing. A ranked member whose evidence
+    cannot be written is a failure the caller must see — silently
     incomplete benchmark evidence is worse than none.
     """
     summaries: list[dict[str, Any]] = []
@@ -531,6 +677,10 @@ def collect_member_results(
             "status": member.get("status"),
             "solver_admission_id": (
                 receipt.get("solver_admission_id") if isinstance(receipt, dict) else None
+            ),
+            "engine": _solver_label(member) if isinstance(receipt, dict) else None,
+            "execution_time_ms": (
+                receipt.get("execution_time_ms") if isinstance(receipt, dict) else None
             ),
             "ranked": member.get("job_id") in ranked_ids,
         }
@@ -628,9 +778,10 @@ def _create_job_with_funding(
     """Resolve funding and create the job, falling back across every
     drawable faucet program when no ordinary rail is fundable.
 
-    Returns (job, active quote, routing body). Each faucet program gets its
-    own quote and job idempotency keys, and a quote or job failure against
-    one program moves on to the next instead of ending the command.
+    Returns (job, active quote, routing body, funding rail). Each faucet
+    program gets its own quote and job idempotency keys, and a quote or
+    job failure against one program moves on to the next instead of
+    ending the command.
     """
     routing_body = routing_fields(quote, routing)
     cohort_size = len(routing_body.get("selected_algorithms", [])) or 1
@@ -649,7 +800,13 @@ def _create_job_with_funding(
                 candidate = request_json(
                     "POST",
                     f"{base}/v1/quotes",
-                    quote_body(key, document, faucet_program_id=program_id),
+                    quote_body(
+                        key,
+                        document,
+                        constraints=quote_constraints(routing),
+                        max_price_usdc=getattr(routing, "max_price_usdc", None),
+                        faucet_program_id=program_id,
+                    ),
                 )
             except SystemExit as exc:
                 attempts.append(f"{program_id}: quote failed: {exc}")
@@ -692,17 +849,100 @@ def _create_job_with_funding(
                 f"funding fell back to faucet program {program_id}",
                 file=sys.stderr,
             )
-            return job, candidate, faucet_routing
+            return job, candidate, faucet_routing, f"faucet ({program_id})"
         detail = (
             "; ".join(attempts)
             if attempts
             else "no drawable faucet enrollment covers this problem type"
         )
         raise SystemExit(f"{unresolved}\nfaucet fallback: {detail}") from unresolved
-    job = request_json(
-        "POST", f"{base}/v1/jobs", job_body(key, quote, routing_body, payment)
+    try:
+        job = request_json(
+            "POST", f"{base}/v1/jobs", job_body(key, quote, routing_body, payment)
+        )
+    except SystemExit as exc:
+        if "portfolio_total_exceeds_price_ceiling" in str(exc):
+            raise SystemExit(
+                f"{exc}\nrecovery: a portfolio's price is the SUM of its "
+                "member prices, checked against the quote's max_price_usdc "
+                "ceiling at job creation — re-run with --max-price-usdc at or "
+                "above the cohort total (or export AGENTSOLVE_MAX_PRICE_USDC; "
+                "default 1.00), or narrow the cohort with --select"
+            ) from exc
+        raise
+    rail = payment["rail"] if payment else "none required (requires_payment=false)"
+    return job, quote, routing_body, rail
+
+
+def _print_warnings(label: str, container: dict[str, Any], quiet: bool) -> None:
+    """Job and quote warnings reach the console when they matter, not
+    buried at the tail of a result blob."""
+    if quiet:
+        return
+    for warning in container.get("warnings") or []:
+        if isinstance(warning, dict):
+            print(
+                f"{label}: warning {warning.get('code')}: {warning.get('message')}",
+                file=sys.stderr,
+            )
+
+
+def _quote_summary(path: Path, quote: dict[str, Any]) -> dict[str, Any]:
+    """Price an experiment before buying it: candidates with engine names
+    and per-member prices, the ceiling, and the payment options."""
+    requirement = quote.get("payment_requirement") or {}
+    return {
+        "input_document": str(path),
+        "quote_id": quote.get("quote_id"),
+        "complexity_tier": quote.get("complexity_tier"),
+        "price_ceiling_usdc": quote.get("price_ceiling_usdc"),
+        "effective_solver_hints": quote.get("effective_solver_hints"),
+        "candidates": [
+            {
+                "solver_admission_id": candidate.get("solver_admission_id"),
+                "engine": (
+                    f"{candidate.get('solver_slot')}"
+                    + (f" v{candidate['solver_version']}" if candidate.get("solver_version") else "")
+                ),
+                "price_locked_usdc": candidate.get("price_locked_usdc"),
+            }
+            for candidate in quote.get("candidates") or []
+            if isinstance(candidate, dict)
+        ],
+        "default_candidate_solver_admission_id": quote.get(
+            "default_candidate_solver_admission_id"
+        ),
+        "requires_payment": requirement.get("requires_payment"),
+        "payment_options": [
+            {"rail": option.get("rail"), "available": option.get("available")}
+            for option in requirement.get("options") or []
+            if isinstance(option, dict)
+        ],
+        "warnings": quote.get("warnings") or [],
+    }
+
+
+def _objective_spread_note(
+    stem: str, cohort: list[dict[str, Any]], quiet: bool
+) -> None:
+    ranked = [
+        entry
+        for entry in cohort
+        if entry.get("ranked") and entry.get("objective_value") is not None
+    ]
+    if quiet or len(ranked) < 2:
+        return
+    values = [entry["objective_value"] for entry in ranked]
+    parts = ", ".join(
+        f"{entry.get('engine') or entry.get('solver_admission_id')}="
+        f"{entry['objective_value']}"
+        for entry in ranked
     )
-    return job, quote, routing_body
+    print(
+        f"{stem}: cohort objectives: {parts} "
+        f"(spread {max(values) - min(values)})",
+        file=sys.stderr,
+    )
 
 
 def submit_one(
@@ -716,14 +956,65 @@ def submit_one(
     stem = source_stem(path, document)
     destination = out_dir if out_dir is not None else path.parent
     destination.mkdir(parents=True, exist_ok=True)
-    key = stable_key(path, document, routing)
-    quote = request_json("POST", f"{base}/v1/quotes", quote_body(key, document))
-    if not (quote.get("quote_id") or quote.get("id")):
-        raise SystemExit(f"{path}: quote response did not include quote_id")
-    job, quote, _ = _create_job_with_funding(base, key, document, quote, routing)
+    receipts_dir = getattr(routing, "receipts_dir", None)
+    receipts_destination = receipts_dir if receipts_dir is not None else destination
+    receipts_destination.mkdir(parents=True, exist_ok=True)
+    quiet = bool(getattr(routing, "quiet", False))
+    resume_job_id = getattr(routing, "resume", None)
+    funding_rail: str | None = None
+    if resume_job_id:
+        job: dict[str, Any] = {"job_id": resume_job_id}
+    else:
+        key = stable_key(path, document, routing)
+        quote = request_json(
+            "POST",
+            f"{base}/v1/quotes",
+            quote_body(
+                key,
+                document,
+                constraints=quote_constraints(routing),
+                max_price_usdc=getattr(routing, "max_price_usdc", None),
+            ),
+        )
+        if not (quote.get("quote_id") or quote.get("id")):
+            raise SystemExit(f"{path}: quote response did not include quote_id")
+        _print_warnings(stem, quote, quiet)
+        if getattr(routing, "quote_only", False):
+            return _quote_summary(path, quote)
+        job, quote, _, funding_rail = _create_job_with_funding(
+            base, key, document, quote, routing
+        )
+        if not quiet:
+            print(
+                f"{stem}: funding rail {funding_rail}; "
+                f"price_locked_usdc {job.get('price_locked_usdc')}",
+                file=sys.stderr,
+            )
+        if getattr(routing, "detach", False):
+            return {
+                "input_document": str(path),
+                "job_id": job.get("job_id"),
+                "status": job.get("status"),
+                "funding_rail": funding_rail,
+                "price_locked_usdc": job.get("price_locked_usdc"),
+                "detached": True,
+                "resume": (
+                    f"python tools/submit.py {path} --resume {job.get('job_id')}"
+                    + (f" --out-dir {out_dir}" if out_dir is not None else "")
+                ),
+            }
     observed = poll_job(
-        base, job, timeout_seconds, settled_threshold=routing.settled_threshold
+        base,
+        job,
+        timeout_seconds,
+        settled_threshold=routing.settled_threshold,
+        label=stem,
+        quiet=quiet,
     )
+    _print_warnings(stem, observed, quiet)
+    advisory = observed.get("improvement_advisory")
+    if advisory and not quiet:
+        print(f"{stem}: {advisory}", file=sys.stderr)
 
     members = observed.get("cohort_members") or []
     selected_job_id: str | None = observed.get("job_id")
@@ -736,7 +1027,7 @@ def submit_one(
             members,
             document,
             stem,
-            destination,
+            receipts_destination,
             objective_sense(document),
             settled_threshold=routing.settled_threshold,
         )
@@ -751,8 +1042,36 @@ def submit_one(
                 f"--settled-threshold {routing.settled_threshold} cannot be "
                 "satisfied"
             )
+        if routing.settled_threshold is None and settled_count < len(members):
+            # A partial cohort without an explicit threshold is a loud
+            # failure, never a bare SETTLED headline from the remnant.
+            shortfall = ", ".join(
+                f"{member.get('job_id')} {member.get('status')}"
+                + (
+                    f" ({(member.get('terminal_diagnostic') or {}).get('failure_code')})"
+                    if isinstance(member.get("terminal_diagnostic"), dict)
+                    and (member.get("terminal_diagnostic") or {}).get("failure_code")
+                    else ""
+                )
+                for member in members
+                if member.get("status") != "SETTLED"
+            )
+            failures.append(
+                f"cohort delivered {settled_count}/{len(members)} settled "
+                f"members without --settled-threshold; non-settled: "
+                f"{shortfall}"
+            )
     else:
         output = observed.get("output") if isinstance(observed.get("output"), dict) else {}
+        if str(observed.get("status")) != "SETTLED":
+            diagnostic = observed.get("terminal_diagnostic")
+            code = (
+                diagnostic.get("failure_code") if isinstance(diagnostic, dict) else None
+            )
+            failures.append(
+                f"job {observed.get('job_id')} terminalized "
+                f"{observed.get('status')}" + (f" ({code})" if code else "")
+            )
     # No headline or native answer on incomplete evidence: a "best" chosen
     # from a silently reduced subset looks like a normal result and is
     # worse than an explicit failure. A previous run's headline files are
@@ -768,22 +1087,33 @@ def submit_one(
         raise SystemExit(
             f"{path}: cohort evidence incomplete — "
             + "; ".join(failures)
-            + f"; attributed member artifacts remain in {destination}; no "
+            + f"; attributed member artifacts remain in {receipts_destination}; no "
             "headline answer exists for this instance"
         )
+    _objective_spread_note(stem, cohort, quiet)
     result_path = destination / f"{stem}.result.json"
     record = {
         "input_document": str(path),
         "problem_type": document["problem_type"],
         "problem_schema_version": document["problem_schema_version"],
         "status": observed.get("status"),
+        # The headline number at the top level — no nested archaeology.
+        "objective_value": (output or {}).get("objective_value"),
         "job": observed,
     }
     if members:
         # The headline answer is the selected member's output, not the
-        # cohort head's.
+        # cohort head's, and the selected member's own receipt attests it.
         record["output"] = output
         record["selected_job_id"] = selected_job_id
+        record["selected_member_receipt"] = next(
+            (
+                member.get("routing_receipt")
+                for member in members
+                if member.get("job_id") == selected_job_id
+            ),
+            None,
+        )
         record["settled_members"] = settled_members
         record["cohort"] = cohort
     result_path.write_text(
@@ -800,12 +1130,34 @@ def submit_one(
         "objective_value": (output or {}).get("objective_value"),
         "result": str(result_path),
         "native_solution": native_solution,
+        "price_locked_usdc": observed.get("price_locked_usdc"),
     }
+    if funding_rail is not None:
+        summary["funding_rail"] = funding_rail
+    if advisory:
+        summary["improvement_advisory"] = advisory
     if members:
         summary["selected_job_id"] = selected_job_id
         summary["settled_members"] = settled_members
         summary["cohort"] = cohort
     return summary
+
+
+def _price_total(summaries: list[dict[str, Any]]) -> str | None:
+    from decimal import Decimal, InvalidOperation
+
+    total = Decimal("0")
+    seen = False
+    for summary in summaries:
+        price = summary.get("price_locked_usdc")
+        if price is None:
+            continue
+        try:
+            total += Decimal(str(price))
+        except InvalidOperation:
+            return None
+        seen = True
+    return str(total) if seen else None
 
 
 def main() -> int:
@@ -855,12 +1207,120 @@ def main() -> int:
             "cohort size."
         ),
     )
+    parser.add_argument(
+        "--time-budget-ms",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "quote constraint: solve-time budget in milliseconds, folded "
+            "into the engines' effective hints (the quote echoes what it "
+            "bound). Part of the idempotency key: a changed budget executes "
+            "a fresh paid job instead of replaying"
+        ),
+    )
+    parser.add_argument(
+        "--constraints",
+        type=str,
+        default=None,
+        metavar="JSON",
+        help=(
+            "additional quote constraints as a JSON object (merged with "
+            "--time-budget-ms, which wins on conflict); part of the "
+            "idempotency key"
+        ),
+    )
+    parser.add_argument(
+        "--rerun",
+        action="store_true",
+        help=(
+            "deliberately re-execute an identical submission as a fresh "
+            "PAID job (salts the idempotency key); without it, re-running "
+            "the same command replays the previous result at no extra cost"
+        ),
+    )
+    lifecycle = parser.add_mutually_exclusive_group()
+    lifecycle.add_argument(
+        "--quote-only",
+        action="store_true",
+        help=(
+            "price the submission and stop: print candidates with engine "
+            "names and per-member prices, the price ceiling, and payment "
+            "options, without creating a job"
+        ),
+    )
+    lifecycle.add_argument(
+        "--detach",
+        action="store_true",
+        help=(
+            "create the job and exit immediately, printing the job id and "
+            "the exact --resume command; poll later instead of blocking"
+        ),
+    )
+    lifecycle.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        metavar="JOB_ID",
+        help=(
+            "poll an existing job to completion and write results (pass the "
+            "same document the job was created from; exactly one document)"
+        ),
+    )
+    parser.add_argument(
+        "--max-price-usdc",
+        type=str,
+        default=None,
+        metavar="X",
+        help=(
+            "price ceiling for the quote (default: AGENTSOLVE_MAX_PRICE_USDC "
+            "or 1.00). A portfolio's total is the SUM of member prices and "
+            "is checked against this same ceiling at job creation — raise "
+            "it for large cohorts"
+        ),
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=3,
+        metavar="N",
+        help=(
+            "process up to N documents concurrently inside this one "
+            "process (default 3; 1 = strictly serial). Progress lines are "
+            "instance-labelled, and in-tool batching avoids the rate-limit "
+            "collisions of parallel processes"
+        ),
+    )
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress progress and heartbeat lines (warnings still print)",
+    )
+    output_mode.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "machine mode: stdout carries only the final JSON summary; all "
+            "progress, heartbeat, and price lines are suppressed"
+        ),
+    )
     parser.add_argument("--base-url", default=os.environ.get("AGENTSOLVE_BASE_URL"))
     parser.add_argument(
         "--out-dir",
         type=Path,
         default=None,
         help="directory for result/native-solution files (default: beside each document)",
+    )
+    parser.add_argument(
+        "--receipts-dir",
+        type=Path,
+        default=None,
+        help=(
+            "directory for per-member receipt artifacts "
+            "({stem}.{engine}.result.json); default: the deliverables "
+            "directory. Keeps graded output directories pristine"
+        ),
     )
     parser.add_argument("--poll-timeout", type=float, default=900.0)
     args = parser.parse_args()
@@ -874,12 +1334,59 @@ def main() -> int:
                 "--settled-threshold applies to multi-member cohorts; pass "
                 "--portfolio or --select with two or more ids"
             )
+    if args.constraints is not None:
+        try:
+            parsed_constraints = json.loads(args.constraints)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--constraints is not valid JSON: {exc}") from exc
+        if not isinstance(parsed_constraints, dict):
+            raise SystemExit("--constraints must be a JSON object")
+        args.constraints = parsed_constraints
+    if args.resume and len(args.documents) != 1:
+        raise SystemExit("--resume polls one job: pass exactly one document")
+    if args.max_concurrency < 1:
+        raise SystemExit("--max-concurrency must be at least 1")
+    args.quiet = args.quiet or args.json
     base = args.base_url.rstrip("/")
-    summaries = [
-        submit_one(base, path, args.poll_timeout, args.out_dir, args)
-        for path in args.documents
-    ]
+
+    def run_one(path: Path) -> dict[str, Any]:
+        return submit_one(base, path, args.poll_timeout, args.out_dir, args)
+
+    failures: list[str] = []
+    if len(args.documents) == 1 or args.max_concurrency == 1:
+        summaries: list[dict[str, Any]] = []
+        for path in args.documents:
+            try:
+                summaries.append(run_one(path))
+            except SystemExit as exc:
+                failures.append(str(exc))
+                summaries.append({"input_document": str(path), "error": str(exc)})
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = min(args.max_concurrency, len(args.documents))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(run_one, path) for path in args.documents]
+            summaries = []
+            for path, future in zip(args.documents, futures):
+                try:
+                    summaries.append(future.result())
+                except SystemExit as exc:
+                    failures.append(str(exc))
+                    summaries.append({"input_document": str(path), "error": str(exc)})
     print(json.dumps(summaries, indent=2, sort_keys=True))
+    if failures:
+        for failure in failures:
+            print(failure, file=sys.stderr)
+        return 1
+    if not args.quiet and not args.quote_only and not args.detach:
+        total = _price_total(summaries)
+        if total is not None:
+            print(
+                f"total price_locked_usdc across {len(summaries)} "
+                f"document(s): {total}",
+                file=sys.stderr,
+            )
     return 0
 
 

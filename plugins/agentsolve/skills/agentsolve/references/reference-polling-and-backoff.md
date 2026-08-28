@@ -30,7 +30,11 @@ result exists, an `output_url` that is readable immediately, before the
 rest of the cohort completes. Every settled member carries its own
 verifier-attested result: obtain each one separately, attribute it to the
 algorithm on its receipt, and keep the best by the problem's objective
-sense (a refunded member, including the polled head, contributes nothing). Portfolio cancellation is all-or-none and
+sense (a refunded member, including the polled head, contributes nothing).
+Cohort agreement is an algorithmic cross-check — distinct algorithms on
+one platform; the receipt's `degraded_mode` and
+`independent_family_count_bucket` fields state exactly what "independent"
+means for the job, so reconcile any independence claim with them. Portfolio cancellation is all-or-none and
 closes once any member starts; to bound waiting, stop polling at your own
 threshold of settled members and let the rest run.
 

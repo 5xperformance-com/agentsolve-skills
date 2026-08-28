@@ -8,13 +8,17 @@ and Taillard JSSP. Dialects outside the accepted subset are rejected, never
 approximated.
 
 Usage:
-    python tools/translate.py INSTANCE_FILE [--out OUT.json]
+    python tools/translate.py INSTANCE_FILE [MORE_FILES ...]
+        [--out OUT.json | --out-dir DIR]
         [--format {tsplib,cvrplib,mps,psplib-sm,taillard}]
         [--vehicle-count N] [--instance-index K]
 
-The output JSON carries problem_type, problem_schema_version, payload,
-node_numbering, notes, format_id, and source_file; submit it with
-tools/submit.py.
+Canonical documents are written into the working directory by default
+(or --out-dir), never beside the instance files — input directories stay
+pristine. Each document carries problem_type, problem_schema_version,
+payload, node_numbering, notes, format_id, and source_file; submit it
+with tools/submit.py. With one instance the summary printed to stdout is
+a single object; with several it is an array in argument order.
 """
 
 from __future__ import annotations
@@ -1369,10 +1373,27 @@ def translate_native(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Translate a native optimization file into canonical AgentSolve input."
+        description=(
+            "Translate native optimization files into canonical AgentSolve "
+            "input. Canonical documents land in the working directory by "
+            "default (or --out-dir), never beside the instance files."
+        )
     )
-    parser.add_argument("instance", type=Path, help="native instance file")
-    parser.add_argument("--out", type=Path, default=None, help="output JSON path")
+    parser.add_argument(
+        "instances", nargs="+", type=Path, help="native instance file(s)"
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="output JSON path (single instance only)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="directory for canonical documents (default: working directory)",
+    )
     parser.add_argument(
         "--format",
         dest="format_id",
@@ -1393,33 +1414,47 @@ def main() -> int:
         help="which instance to take from a multi-instance Taillard file",
     )
     args = parser.parse_args()
-    try:
-        result = translate_native(
-            args.instance,
-            format_id=args.format_id,
-            vehicle_count=args.vehicle_count,
-            instance_index=args.instance_index,
+    if args.out is not None and len(args.instances) > 1:
+        print("translate: --out takes a single instance; use --out-dir", file=sys.stderr)
+        return 2
+    if args.out is not None and args.out_dir is not None:
+        print("translate: pass --out or --out-dir, not both", file=sys.stderr)
+        return 2
+    out_dir = args.out_dir if args.out_dir is not None else Path.cwd()
+    summaries = []
+    failed = False
+    for instance in args.instances:
+        try:
+            result = translate_native(
+                instance,
+                format_id=args.format_id,
+                vehicle_count=args.vehicle_count,
+                instance_index=args.instance_index,
+            )
+        except (NativeFormatError, OSError) as exc:
+            print(f"translate: {instance}: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        if args.out is not None:
+            out_path = args.out
+        else:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / (instance.name + ".canonical.json")
+        out_path.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-    except (NativeFormatError, OSError) as exc:
-        print(f"translate: {exc}", file=sys.stderr)
-        return 1
-    out_path = args.out or args.instance.with_name(args.instance.name + ".canonical.json")
-    out_path.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    print(
-        json.dumps(
+        summaries.append(
             {
                 "written": str(out_path),
                 "problem_type": result["problem_type"],
                 "problem_schema_version": result["problem_schema_version"],
                 "notes": result["notes"],
-            },
-            indent=2,
-            sort_keys=True,
+            }
         )
-    )
-    return 0
+    printable = summaries[0] if len(args.instances) == 1 and summaries else summaries
+    if summaries:
+        print(json.dumps(printable, indent=2, sort_keys=True))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
