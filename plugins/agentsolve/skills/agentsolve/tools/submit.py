@@ -40,7 +40,9 @@ part of the idempotency key: re-quoting the same document with a larger
 budget executes a fresh paid job instead of silently replaying the cheap
 one. `--rerun` deliberately re-executes an identical submission (a paid
 re-roll); without it, re-running the same command replays the previous
-result at no extra cost.
+result at no extra cost. The polling deadline follows the purchased
+budget automatically — the tool never sells a solve longer than its own
+patience — and `--poll-timeout` overrides it.
 
 `--quote-only` prices the submission (candidates, engines, price
 ceiling, payment options) without creating a job. `--detach` creates the
@@ -203,6 +205,29 @@ def quote_constraints(routing: argparse.Namespace) -> dict[str, Any] | None:
     if time_budget_ms is not None:
         constraints["time_budget_ms"] = time_budget_ms
     return constraints or None
+
+
+DEFAULT_POLL_TIMEOUT_SECONDS = 900.0
+
+
+def effective_poll_timeout(routing: argparse.Namespace) -> float:
+    """The polling deadline this invocation waits out.
+
+    An explicit ``--poll-timeout`` always wins. Otherwise the deadline
+    follows what the invocation bought: the purchased solve budget plus
+    the platform's first-dispatch bound (a queued job may lawfully wait
+    up to 900 seconds before any worker picks it up, and verification
+    and settlement ride inside that same headroom) — the tool must never
+    sell a solve longer than its own patience. Budget-less submissions
+    keep the flat default.
+    """
+    explicit = getattr(routing, "poll_timeout", None)
+    if explicit is not None:
+        return float(explicit)
+    budget_ms = (quote_constraints(routing) or {}).get("time_budget_ms")
+    if isinstance(budget_ms, (int, float)) and budget_ms > 0:
+        return float(budget_ms) / 1000.0 + DEFAULT_POLL_TIMEOUT_SECONDS
+    return DEFAULT_POLL_TIMEOUT_SECONDS
 
 
 def resolved_max_price_usdc(routing: argparse.Namespace) -> str:
@@ -1346,7 +1371,17 @@ def main() -> int:
             "directory. Keeps graded output directories pristine"
         ),
     )
-    parser.add_argument("--poll-timeout", type=float, default=900.0)
+    parser.add_argument(
+        "--poll-timeout",
+        type=float,
+        default=None,
+        help=(
+            "seconds to poll before giving up; default: the purchased "
+            "time budget plus 900s of dispatch-and-verification headroom "
+            "(900s flat without a budget), so the poll always outlasts "
+            "the solve it paid for"
+        ),
+    )
     args = parser.parse_args()
     if not args.base_url:
         raise SystemExit("set AGENTSOLVE_BASE_URL or pass --base-url")
@@ -1374,7 +1409,7 @@ def main() -> int:
     base = args.base_url.rstrip("/")
 
     def run_one(path: Path) -> dict[str, Any]:
-        return submit_one(base, path, args.poll_timeout, args.out_dir, args)
+        return submit_one(base, path, effective_poll_timeout(args), args.out_dir, args)
 
     failures: list[str] = []
     if len(args.documents) == 1 or args.max_concurrency == 1:
