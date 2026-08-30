@@ -103,8 +103,11 @@ result — if the task ships its own checker, run it on the returned
 solution files, and read the receipt's
 `established_guarantee` for what was and was not proved
 ([references/reference-verification-and-certificates.md](references/reference-verification-and-certificates.md)).
-Absent an optimality certificate, report the best verified objective as
-best-found, not proven optimal. The cohort summary tells you whether more
+A receipt that certifies `proved_optimal` with a matching bound is
+terminal for that instance: the objective is mathematically settled, no
+further round at any budget can improve it, and the honest report says
+proved optimal. Absent an optimality certificate, report the best
+verified objective as best-found, not proven optimal. The cohort summary tells you whether more
 time can help: per-member objectives, runtimes, and agreement ship on
 every settled portfolio, and the platform flags when the winning engine
 finished well inside its budget. Buy another round only when that

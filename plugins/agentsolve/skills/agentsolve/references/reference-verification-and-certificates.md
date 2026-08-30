@@ -25,9 +25,14 @@ verifier's proof envelope, a valid result can still carry
 - MILP: independent feasibility/objective checks; bounds, gaps, and public
   proof flags remain diagnostic.
 - TSP: route validity, visit coverage, depot return or finish semantics, and
-  objective recomputation.
+  objective recomputation; receipts additionally carry a solver-sourced
+  `proved_optimal` with matching bound and zero gap where an exact engine
+  closes the instance.
 - CVRP/VRPTW-lite: route validity, coverage, capacity, hard-window timing,
-  service completion, route-duration checks, and objective recomputation.
+  service completion, route-duration checks, and objective recomputation;
+  receipts additionally carry a solver-sourced `proved_optimal` (or an
+  honest bound and gap on an unproved incumbent) where an exact engine
+  serves the instance.
 - RCPSP: precedence, renewable-resource capacity, calendars, activity windows,
   mode legality, makespan recomputation, and `proved_optimal` as a diagnostic.
 - Newsvendor: selected quantity and expected cost/profit recomputation over
