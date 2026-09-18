@@ -50,6 +50,24 @@ verifier's proof envelope, a valid result can still carry
 - Bin packing: exact partition and count, plus exact bounded recomputation or
   the integer volume-lower-bound proposition when applicable.
 
+## Improvement Rounds
+
+The cohort summary says whether more time can help: per-member objectives,
+runtimes, termination reasons, and agreement ship on every settled
+portfolio. A receipt that certifies `proved_optimal` with a matching bound
+and zero gap is terminal for that instance — no further round at any
+budget can improve it. Absent a certificate, buy another round only when
+that evidence shows headroom: a fresh quote with a larger
+`constraints.time_budget_ms`, narrowed to the contenders, sized from the
+winner's observed runtime rather than guessed. When all settled members
+agree at the best objective and the winner finished inside its budget, a
+larger budget is unlikely to change the answer — that is reasoning, not
+proof, so the honest report stays best-found. Resubmitting an unchanged
+document replays the recorded result at no extra cost; a deliberate paid
+re-roll can change the answer only where an engine is stochastic. Stop
+after one round without improvement. Improvement comes from platform
+rounds, never local heuristics.
+
 ## Actionability
 
 Tenant-scoped results can include richer result payloads and reduced costs.

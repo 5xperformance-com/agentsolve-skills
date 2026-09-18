@@ -27,6 +27,11 @@ This file reflects the implemented contract. Runtime discovery and the quote's
 submit. `stripe_spt` is review-gated, disabled by default, and appears only when
 quote-level discovery marks it `available=true`.
 
+Portfolio (multi-member) jobs pay from account credit or trial credit only;
+the Stripe rail rejects portfolios by design. A portfolio's total price is
+the sum of its member prices and is checked against the quote's
+`max_price_usdc` ceiling at job creation.
+
 For account-credit flows, a human/account owner first buys credit through
 `POST /v1/payments/account-credit/top-ups` and confirms the returned Stripe
 PaymentIntent outside AgentSolve's card-data boundary; that top-up endpoint

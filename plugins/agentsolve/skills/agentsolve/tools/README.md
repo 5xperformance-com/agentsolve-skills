@@ -1,12 +1,20 @@
 # Tools
 
-Two standard-library command-line tools for native instance files:
+Three standard-library command-line tools for native instance files:
 
+- `solve.py` — the one-invocation path: translate -> quote -> fund ->
+  submit -> poll -> write in a single foreground call. Native files are
+  translated first, canonical `*.canonical.json` documents pass through
+  unchanged, and every `submit.py` option applies. The call finishes with
+  the receipt-backed answer block, so nothing needs to be tailed, polled,
+  or re-read afterwards.
 - `translate.py` — deterministic translation of TSPLIB (`.tsp`/`.atsp`),
   CVRPLIB (`.vrp`), MPS (`.mps`/`.mps.gz`), PSPLIB single-mode (`.sm`), and
   Taillard JSSP files into canonical submission documents. Generated from the
   AgentSolve production translators; do not edit by hand. Dialects outside the
-  accepted subset are rejected, never approximated.
+  accepted subset are rejected, never approximated. When translating
+  standalone, review the written `*.canonical.json` before submitting it
+  with `submit.py`.
 - `submit.py` — drives one submission document through quote -> job -> poll
   and writes results named after the source instance (`berlin52.tsp` ->
   `berlin52.result.json`, plus a TSPLIB `berlin52.tour` for `1.1.tsp` and a
@@ -19,16 +27,17 @@ Two standard-library command-line tools for native instance files:
   own attributed artifact (`FILE.<solver>.result.json` with the member's
   receipt), and emits the best by objective sense as the headline answer
   (`--settled-threshold N` takes the best of the first N responses);
-  `--select ID ...` and `--auto-route` are the explicit alternatives.
-  Funding: account-credit authority, then trial credit, then Stripe
-  (single-candidate cohorts only), with an automatic faucet fallback across
-  drawable enrolled programs when no other rail is fundable.
+  `--select` takes `solver_admission_id` values printed by the quote, not
+  engine names; `--auto-route` is the other explicit alternative. Funding
+  automation covers supported account-credit, trial-credit, Stripe, and
+  faucet flows. Follow the quote and
+  [payment-rails reference](../references/reference-payment-rails.md) for
+  x402 or a review-gated rail.
 
 Typical session:
 
 ```bash
-python tools/translate.py instances/berlin52.tsp
-python tools/submit.py instances/berlin52.tsp.canonical.json --out-dir solutions
+python tools/solve.py instances/*.tsp --portfolio --out-dir solutions
 ```
 
 Dialect coverage, vehicle-count rules, and per-format failure modes:

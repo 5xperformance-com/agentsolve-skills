@@ -51,6 +51,13 @@ A terminal job or cohort member carries its own explanation:
   batching (`submit.py A.json B.json C.json`) over launching parallel
   processes — a burst of concurrent submissions is what trips the queue
   limit.
+- **HTTP 429 `RATE_LIMITED` with `details.extra.bucket ==
+  "fresh_execution_tasks"`**: the account has created its hourly allowance
+  of new jobs (30 per clock hour by default; the window is fixed, not
+  sliding). The quote already succeeded and stays valid; wait
+  `details.extra.retry_after_seconds` and retry the identical job request
+  with the same idempotency key. Pace a batch of more than 30 problems
+  across hours rather than retrying in a loop.
 - **HTTP 409 after a 429**: if a byte-identical retry answers 409, do not
   invent a new idempotency key to get around it — report the error
   envelope verbatim; the pairing is a platform defect, not an input

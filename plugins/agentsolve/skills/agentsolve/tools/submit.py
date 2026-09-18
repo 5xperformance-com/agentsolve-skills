@@ -2,14 +2,24 @@
 """Submit translated canonical documents through quote -> job -> poll.
 
 Reads one or more submission documents written by tools/translate.py, creates
-a quote, resolves funding (account-credit authority first, then trial credit,
-then an already-confirmed Stripe PaymentIntent, then an automatic faucet
-fallback when the account is enrolled in an active faucet program), creates
+a quote, resolves helper-supported funding (account-credit authority, trial
+credit, eligible Stripe, then enrolled faucet fallback), creates
 the job, polls to a terminal state, and writes results named after the source
 instance (`foo.tsp` -> `foo.result.json`, plus a TSPLIB `foo.tour` for
 `1.1.tsp` and a CVRPLIB `foo.sol` for `1.2.vrp.cvrp`). Use `--out-dir` to
 write them where your task expects (for example `--out-dir solutions`); the
 default is the document's own directory.
+
+The quote remains authoritative for every rail. x402 and review-gated rails
+require their documented quote payloads; this helper never invents them.
+
+On completion stdout is one receipt-backed answer block per document: best
+objective and winning engine, certificate status (proof language only when
+a receipt certifies it), verified validity, price, receipt id, and one
+winner line with stop/runtime/admission, plus one line per cohort member with
+its selectable admission id. The block carries
+every decision-relevant fact from the result artifacts, so nothing needs
+to be re-read or re-verified; `--json` remains the machine summary.
 
 Routing: the default runs the quote's default candidate solver — one engine,
 one price. When the task asks for the best achievable answer, pass
@@ -19,7 +29,8 @@ progress), obtains every settled member's result separately — one attributed
 artifact per solver (`foo.<solver_admission_id>.result.json`, carrying that
 member's own receipt), so a portfolio doubles as a benchmarking sweep — and
 additionally emits the best result by the problem's objective sense as the
-headline answer. `--select ID [ID ...]` submits an explicit cohort, and
+headline answer. `--select ADMISSION_ID [ADMISSION_ID ...]` takes ids from
+the quote, never engine names, and
 `--auto-route` uses the platform's deterministic catalog-default selection.
 `--settled-threshold N` stops waiting once N members have settled and ranks
 exactly the first N responses by settlement order — receipt timestamps, so
@@ -29,9 +40,9 @@ finish between polls; the remaining members keep running server-side
 member starts). If the cohort terminalizes with fewer than N settled
 members, or any ranked member's evidence cannot be written, the command
 fails without a headline answer: a "best" drawn from a silently reduced
-subset is not evidence. The job price multiplies by the cohort size, and portfolio jobs
-pay from account credit or trial credit only; the Stripe rail rejects
-portfolios by design.
+subset is not evidence. The job price multiplies by the cohort size, and
+portfolio jobs pay from account credit or trial credit only; the Stripe
+rail rejects portfolios by design.
 
 Quote constraints: `--time-budget-ms N` buys the engines a solve-time
 budget (the quote echoes the effective hints it bound), and
@@ -44,8 +55,10 @@ result at no extra cost. The polling deadline follows the purchased
 budget automatically — the tool never sells a solve longer than its own
 patience — and `--poll-timeout` overrides it.
 
-`--quote-only` prices the submission (candidates, engines, price
-ceiling, payment options) without creating a job. `--detach` creates the
+`--quote-only` prices the submission without creating a job: a compact
+table (engine, admission id, price, ceiling, rails) on stdout, with the
+full quote JSON written to `STEM.quote.json` beside the results (or on
+stdout under `--json`). `--detach` creates the
 job and exits immediately, printing the job id and the exact resume
 command; `--resume JOB_ID` (with the same document) polls an existing
 job to completion and writes results. `--receipts-dir` separates the
@@ -336,7 +349,37 @@ def routing_fields(quote: dict[str, Any], routing: argparse.Namespace) -> dict[s
     if routing.auto_route:
         return {"auto_route": True}
     if routing.select:
-        return {"selected_algorithms": list(routing.select)}
+        selected = list(routing.select)
+        if len(selected) > COHORT_CAP:
+            raise SystemExit(f"--select accepts at most {COHORT_CAP} admission ids")
+        if len(selected) != len(set(selected)):
+            raise SystemExit("--select admission ids must be unique")
+        candidates = [
+            candidate
+            for candidate in quote.get("candidates", [])
+            if isinstance(candidate, dict)
+        ]
+        allowed = {
+            candidate.get("solver_admission_id")
+            for candidate in candidates
+            if candidate.get("solver_admission_id")
+        }
+        unknown = [candidate_id for candidate_id in selected if candidate_id not in allowed]
+        if unknown:
+            mapping = "\n".join(
+                f"  {_quote_candidate_label(candidate)} -> "
+                f"{candidate.get('solver_admission_id')}"
+                for candidate in candidates
+                if candidate.get("solver_admission_id")
+            ) or "  (the quote lists no selectable candidates)"
+            raise SystemExit(
+                "--select accepts solver_admission_id values from this quote; "
+                "engine names are not accepted\n"
+                f"unrecognized: {', '.join(unknown)}\n"
+                "allowed engine -> solver_admission_id:\n"
+                f"{mapping}"
+            )
+        return {"selected_algorithms": selected}
     if routing.portfolio:
         candidate_ids = [
             candidate["solver_admission_id"]
@@ -357,6 +400,17 @@ def routing_fields(quote: dict[str, Any], routing: argparse.Namespace) -> dict[s
     if isinstance(default_candidate, str) and default_candidate:
         return {"selected_algorithms": [default_candidate]}
     return {"auto_route": True}
+
+
+def _quote_candidate_label(candidate: dict[str, Any]) -> str:
+    """The quote's human engine label, distinct from its selectable id."""
+    slot = candidate.get("solver_slot") or candidate.get("engine_lineage_id")
+    version = candidate.get("solver_version")
+    if slot and version:
+        return f"{slot} v{version}"
+    if slot:
+        return str(slot)
+    return str(candidate.get("solver_admission_id") or "?")
 
 
 def resolve_stripe_payment(base: str, key: str, quote: dict[str, Any]) -> dict[str, Any]:
@@ -630,24 +684,31 @@ def poll_job(
     raise SystemExit(f"job {job_id} did not reach a terminal state within {timeout_seconds}s")
 
 
+def _engine_label(receipt: dict[str, Any] | None) -> str | None:
+    """The engine's human name off a receipt: backend and version, with
+    the admission id as the fallback identity."""
+    if not isinstance(receipt, dict):
+        return None
+    backend = receipt.get("solver_backend")
+    version = receipt.get("solver_version")
+    if backend and version:
+        return f"{backend}-{version}"
+    if backend:
+        return str(backend)
+    identity = (
+        receipt.get("solver_slot")
+        or receipt.get("engine_lineage_id")
+        or receipt.get("solver_admission_id")
+    )
+    return str(identity) if identity else None
+
+
 def _solver_label(member: dict[str, Any]) -> str:
-    """The engine's human name: backend and version off the member's own
-    receipt, with the admission id as the fallback identity."""
     receipt = member.get("routing_receipt")
     if isinstance(receipt, dict):
-        backend = receipt.get("solver_backend")
-        version = receipt.get("solver_version")
-        if backend and version:
-            return f"{backend}-{version}"
-        if backend:
-            return str(backend)
-        identity = (
-            receipt.get("solver_slot")
-            or receipt.get("engine_lineage_id")
-            or receipt.get("solver_admission_id")
-        )
-        if identity:
-            return str(identity)
+        label = _engine_label(receipt)
+        if label:
+            return label
     return str(member.get("job_id"))
 
 
@@ -856,7 +917,11 @@ def _create_job_with_funding(
             # The faucet quote has its own candidate set; re-resolve the
             # cohort against it and revalidate the threshold — a program
             # that restricts solver families can shrink the cohort below N.
-            faucet_routing = routing_fields(candidate, routing)
+            try:
+                faucet_routing = routing_fields(candidate, routing)
+            except SystemExit as exc:
+                attempts.append(f"{program_id}: routing incompatible: {exc}")
+                continue
             faucet_cohort = len(faucet_routing.get("selected_algorithms", [])) or 1
             if (
                 routing.settled_threshold is not None
@@ -940,7 +1005,11 @@ def _quote_summary(path: Path, quote: dict[str, Any]) -> dict[str, Any]:
                 "solver_admission_id": candidate.get("solver_admission_id"),
                 "engine": (
                     f"{candidate.get('solver_slot')}"
-                    + (f" v{candidate['solver_version']}" if candidate.get("solver_version") else "")
+                    + (
+                        f" v{candidate['solver_version']}"
+                        if candidate.get("solver_version")
+                        else ""
+                    )
                 ),
                 "price_locked_usdc": candidate.get("price_locked_usdc"),
             }
@@ -1018,7 +1087,15 @@ def submit_one(
             raise SystemExit(f"{path}: quote response did not include quote_id")
         _print_warnings(stem, quote, quiet)
         if getattr(routing, "quote_only", False):
-            return _quote_summary(path, quote)
+            quote_summary = _quote_summary(path, quote)
+            if not getattr(routing, "json", False):
+                quote_path = destination / f"{stem}.quote.json"
+                quote_path.write_text(
+                    json.dumps(quote_summary, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                quote_summary["quote_file"] = str(quote_path)
+            return quote_summary
         job, quote, _, funding_rail = _create_job_with_funding(
             base, key, document, quote, routing
         )
@@ -1099,6 +1176,11 @@ def submit_one(
                 f"members without --settled-threshold; non-settled: "
                 f"{shortfall}"
             )
+            if settled_count:
+                failures.append(
+                    "free recovery: rerun this document with the same routing, "
+                    f"without --rerun, and add --settled-threshold {settled_count}"
+                )
     else:
         output = observed.get("output") if isinstance(observed.get("output"), dict) else {}
         if str(observed.get("status")) != "SETTLED":
@@ -1181,11 +1263,347 @@ def submit_one(
     return summary
 
 
+def _certificate_note(receipt: dict[str, Any] | None, objective: Any) -> str:
+    """Receipt-gated certificate vocabulary.
+
+    Proof language requires the receipt's own certification —
+    ``proved_optimal`` AND ``optimality_certified`` AND
+    ``verified_validity`` — at gap zero with a bound equal to the
+    delivered objective; a raw proof flag alone never creates the claim.
+    "Verified" likewise requires ``verified_validity``; anything else is
+    said plainly as unverified or no answer.
+    """
+    if objective is None:
+        return "no answer recorded — nothing to certify"
+    if not isinstance(receipt, dict):
+        return "unverified (no receipt recorded for the selected answer)"
+    if receipt.get("verified_validity") is not True:
+        return "unverified (verified_validity is not true on the receipt)"
+    bound = receipt.get("best_bound")
+    gap = receipt.get("optimality_gap")
+    if _receipt_certifies_objective(receipt, objective):
+        return (
+            f"proved optimal (bound {_integral(bound)}, gap 0) — terminal: "
+            "no further round at any budget can improve it"
+        )
+    if receipt.get("proved_optimal") is True:
+        return (
+            "verified best-found (the receipt's proof claim does not "
+            "certify this objective)"
+        )
+    if isinstance(gap, (int, float)) and gap > 0:
+        return f"verified best-found (engine-reported gap {gap:.1%}, not a proof)"
+    return "verified best-found (no optimality certificate)"
+
+
+def _receipt_certifies_objective(receipt: Any, objective: Any) -> bool:
+    if not isinstance(receipt, dict) or objective is None:
+        return False
+    bound = receipt.get("best_bound")
+    gap = receipt.get("optimality_gap")
+    return (
+        receipt.get("proved_optimal") is True
+        and receipt.get("optimality_certified") is True
+        and receipt.get("verified_validity") is True
+        and isinstance(gap, (int, float))
+        and float(gap) == 0.0
+        and isinstance(bound, (int, float))
+        and float(bound) == float(objective)
+    )
+
+
+def _tied_proof_receipt(
+    record: dict[str, Any], objective: Any, selected_receipt: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Prefer the selected receipt, then any ranked member proving the tie."""
+    if _receipt_certifies_objective(selected_receipt, objective):
+        return selected_receipt
+    members = {
+        member.get("job_id"): member.get("routing_receipt")
+        for member in (record.get("job") or {}).get("cohort_members") or []
+        if isinstance(member, dict)
+    }
+    for entry in record.get("cohort") or []:
+        if (
+            not isinstance(entry, dict)
+            or entry.get("ranked") is False
+            or entry.get("status") != "SETTLED"
+            or entry.get("objective_value") != objective
+        ):
+            continue
+        receipt = members.get(entry.get("job_id"))
+        if _receipt_certifies_objective(receipt, objective):
+            return receipt
+    return None
+
+
+def _usdc_sum(values: list[Any]) -> str | None:
+    from decimal import Decimal, InvalidOperation
+
+    total = Decimal("0")
+    seen = False
+    for value in values:
+        if value is None:
+            continue
+        try:
+            total += Decimal(str(value))
+        except InvalidOperation:
+            return None
+        seen = True
+    return str(total) if seen else None
+
+
+def _member_lines(record: dict[str, Any]) -> list[str]:
+    reasons = {
+        member.get("job_id"): (member.get("routing_receipt") or {}).get(
+            "terminated_reason"
+        )
+        for member in (record.get("job") or {}).get("cohort_members") or []
+        if isinstance(member.get("routing_receipt"), dict)
+    }
+    lines = []
+    for entry in record.get("cohort") or []:
+        engine = entry.get("engine") or entry.get("solver_admission_id") or "?"
+        objective = entry.get("objective_value")
+        runtime_ms = entry.get("execution_time_ms")
+        lines.append(
+            "    {engine:<26} {objective:>12}  {status}  {reason}  {runtime}  "
+            "id={admission}".format(
+                engine=engine,
+                objective="-" if objective is None else str(_integral(objective)),
+                status=entry.get("status"),
+                reason=reasons.get(entry.get("job_id")) or "-",
+                runtime=(
+                    f"{runtime_ms / 1000:.1f}s"
+                    if isinstance(runtime_ms, (int, float))
+                    else "-"
+                ),
+                admission=entry.get("solver_admission_id") or "-",
+            )
+        )
+    return lines
+
+
+def _stop_hint(record: dict[str, Any], receipt: dict[str, Any] | None) -> str | None:
+    """Heuristic stop guidance from receipt facts — reasoning, not proof.
+
+    "All settled members agree" may only be said when every settled
+    member was actually examined: under a settled threshold, unranked
+    settled members have unfetched objectives, so the hint stays silent.
+    """
+    if isinstance(receipt, dict) and receipt.get("terminated_reason") is None:
+        return (
+            "  stop hint: the winning receipt records no budget-exhaustion "
+            "evidence; it does not indicate a larger-budget re-run."
+        )
+    objective = record.get("objective_value")
+    settled = [
+        entry
+        for entry in record.get("cohort") or []
+        if entry.get("status") == "SETTLED"
+    ]
+    if not settled or any(
+        not entry.get("ranked") or entry.get("objective_value") is None
+        for entry in settled
+    ):
+        return None
+    if (
+        len(settled) >= 2
+        and objective is not None
+        and all(entry["objective_value"] == objective for entry in settled)
+        and isinstance(receipt, dict)
+        and receipt.get("terminated_reason") == "completed_before_budget"
+    ):
+        return (
+            "  stop hint: all settled members agree at "
+            f"{_integral(objective)} and the winning engine finished inside "
+            "its budget — a larger-budget re-run is unlikely to improve; buy "
+            "another round only if a certificate is required."
+        )
+    return None
+
+
+def _quote_block(summary: dict[str, Any]) -> str | None:
+    """The compact price table for one --quote-only summary."""
+    quote_file = summary.get("quote_file")
+    candidates = summary.get("candidates")
+    if not isinstance(quote_file, str) or not isinstance(candidates, list):
+        return None
+    stem = Path(quote_file).name.removesuffix(".quote.json")
+    total = _usdc_sum(
+        [candidate.get("price_locked_usdc") for candidate in candidates]
+    )
+    header = f"{stem}: quote {summary.get('quote_id')}"
+    tier = summary.get("complexity_tier")
+    if tier:
+        header += f" (tier {tier})"
+    header += f" — {len(candidates)} candidate" + ("s" if len(candidates) != 1 else "")
+    if total is not None:
+        header += f", portfolio total {total} USDC"
+    ceiling = summary.get("price_ceiling_usdc")
+    if ceiling is not None:
+        header += f", ceiling {ceiling}"
+    lines = [header, "  engine | solver_admission_id | USDC"]
+    for candidate in candidates:
+        lines.append(
+            "    {engine} | {admission} | {price}".format(
+                engine=candidate.get("engine")
+                or candidate.get("solver_admission_id")
+                or "?",
+                admission=candidate.get("solver_admission_id") or "-",
+                price=candidate.get("price_locked_usdc") or "-",
+            )
+        )
+    rails = [
+        str(option.get("rail"))
+        for option in summary.get("payment_options") or []
+        if option.get("available")
+    ]
+    if rails:
+        lines.append("  payment rails available: " + ", ".join(rails))
+    for warning in summary.get("warnings") or []:
+        if isinstance(warning, dict):
+            lines.append(
+                f"  warning {warning.get('code')}: {warning.get('message')}"
+            )
+    lines.append(
+        f"  full quote: {quote_file}; submit by re-running without --quote-only"
+    )
+    return "\n".join(lines)
+
+
+def _answer_block(summary: dict[str, Any]) -> str | None:
+    """The compact receipt-backed answer for one submitted document."""
+    result_path = summary.get("result")
+    if not isinstance(result_path, str):
+        return None
+    try:
+        record = json.loads(Path(result_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    job = record.get("job") or {}
+    receipt = record.get("selected_member_receipt") or job.get("routing_receipt")
+    receipt = receipt if isinstance(receipt, dict) else None
+    objective = record.get("objective_value")
+    members = job.get("cohort_members") or []
+    if members:
+        engine = next(
+            (
+                entry.get("engine") or entry.get("solver_admission_id")
+                for entry in record.get("cohort") or []
+                if entry.get("job_id") == record.get("selected_job_id")
+            ),
+            None,
+        )
+        price = _usdc_sum(
+            [
+                (member.get("routing_receipt") or {}).get("price_locked_usdc")
+                for member in members
+                if isinstance(member.get("routing_receipt"), dict)
+            ]
+        )
+    else:
+        engine = _engine_label(receipt)
+        price = (receipt or {}).get("price_locked_usdc") or job.get("price_locked_usdc")
+    name = Path(result_path).name
+    stem = name.removesuffix(".result.json")
+    headline = f"{stem}: {record.get('status')}"
+    if objective is not None:
+        headline += f" — best objective {_integral(objective)}"
+        if engine:
+            headline += f" by {engine}"
+    proof_receipt = _tied_proof_receipt(record, objective, receipt)
+    certificate_receipt = proof_receipt or receipt
+    certificate = _certificate_note(certificate_receipt, objective)
+    if proof_receipt and (
+        not receipt or proof_receipt.get("receipt_id") != receipt.get("receipt_id")
+    ):
+        certificate += f" via {_engine_label(proof_receipt) or 'tied member'}"
+        if proof_receipt.get("receipt_id"):
+            certificate += f" ({proof_receipt['receipt_id']})"
+    lines = [headline, f"  certificate: {certificate}"]
+    facts = []
+    if isinstance(receipt, dict) and receipt.get("verified_validity") is not None:
+        facts.append(f"verified_validity={str(receipt['verified_validity']).lower()}")
+    if price is not None:
+        facts.append(f"{'cohort price' if members else 'price'} {price} USDC")
+    if isinstance(receipt, dict) and receipt.get("receipt_id"):
+        facts.append(f"receipt {receipt['receipt_id']}")
+    if facts:
+        lines.append("  " + "; ".join(facts))
+    if isinstance(receipt, dict):
+        decision = []
+        reason = receipt.get("terminated_reason")
+        runtime_ms = receipt.get("execution_time_ms")
+        admission = receipt.get("solver_admission_id")
+        decision.append(f"stop={reason or 'not_recorded'}")
+        if isinstance(runtime_ms, (int, float)):
+            decision.append(f"runtime={runtime_ms / 1000:.1f}s")
+        if admission:
+            decision.append(f"select={admission}")
+        if decision:
+            lines.append("  winner: " + "; ".join(decision))
+    if members:
+        settled = record.get("settled_members")
+        lines.append(
+            f"  members ({settled} settled; engine objective status stop runtime id):"
+            if settled
+            else "  members (engine objective status stop runtime id):"
+        )
+        lines.extend(_member_lines(record))
+    hint = None
+    if not proof_receipt:
+        hint = _stop_hint(record, receipt)
+    if hint:
+        lines.append(hint)
+    advisory = summary.get("improvement_advisory")
+    if advisory:
+        lines.append(f"  advisory: {advisory}")
+    files = [result_path]
+    if summary.get("native_solution"):
+        files.append(str(summary["native_solution"]))
+    lines.append("  files: " + ", ".join(files))
+    return "\n".join(lines)
+
+
+_ANSWER_FOOTER = (
+    "The facts above are read from the result artifacts and the receipts "
+    "recorded in them; the .result.json files add each member's full receipt and "
+    "solution payload, and native solutions are already written. "
+    "Re-reading them changes nothing above. Machine dump: --json."
+)
+
+
 def render_summaries(summaries: list[dict[str, Any]], *, machine: bool) -> str:
-    """The final stdout: one compact line for machines, indented for eyes."""
+    """The final stdout: one compact line for machines, else one
+    receipt-backed answer block per document."""
     if machine:
         return json.dumps(summaries, sort_keys=True, separators=(",", ":"))
-    return json.dumps(summaries, indent=2, sort_keys=True)
+    blocks: list[str] = []
+    rendered_answer = False
+    for summary in summaries:
+        if summary.get("error"):
+            blocks.append(f"FAILED {summary.get('input_document')}: {summary['error']}")
+            continue
+        if summary.get("detached"):
+            blocks.append(
+                f"detached: {summary.get('job_id')} ({summary.get('status')}); "
+                f"resume with: {summary.get('resume')}"
+            )
+            continue
+        block = _quote_block(summary)
+        if block is not None:
+            blocks.append(block)
+            continue
+        block = _answer_block(summary)
+        if block is None:
+            blocks.append(json.dumps(summary, indent=2, sort_keys=True))
+        else:
+            blocks.append(block)
+            rendered_answer = True
+    if rendered_answer:
+        blocks.append(_ANSWER_FOOTER)
+    return "\n\n".join(blocks)
 
 
 def _price_total(summaries: list[dict[str, Any]]) -> str | None:
@@ -1205,7 +1623,7 @@ def _price_total(summaries: list[dict[str, Any]]) -> str | None:
     return str(total) if seen else None
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Submit translated canonical documents through quote -> job -> "
@@ -1232,7 +1650,11 @@ def main() -> int:
         "--select",
         nargs="+",
         metavar="ADMISSION_ID",
-        help="run an explicit candidate cohort (1 id for a single engine, 2-10 for a portfolio)",
+        help=(
+            "run an explicit candidate cohort using solver_admission_id values "
+            "copied from this quote, never engine names (1 id for a single "
+            "engine, 2-10 for a portfolio)"
+        ),
     )
     mode.add_argument(
         "--auto-route",
@@ -1289,9 +1711,11 @@ def main() -> int:
         "--quote-only",
         action="store_true",
         help=(
-            "price the submission and stop: print candidates with engine "
-            "names and per-member prices, the price ceiling, and payment "
-            "options, without creating a job"
+            "price the submission and stop, without creating a job: a "
+            "compact table of candidates with engine names, selectable "
+            "admission ids, per-member prices, the ceiling, and payment "
+            "rails; the full quote JSON "
+            "lands in STEM.quote.json (stdout under --json)"
         ),
     )
     lifecycle.add_argument(
@@ -1342,7 +1766,7 @@ def main() -> int:
         action="store_true",
         help=(
             "suppress progress and heartbeat lines; stdout keeps the "
-            "human-indented JSON summary"
+            "answer blocks"
         ),
     )
     output_mode.add_argument(
@@ -1382,7 +1806,10 @@ def main() -> int:
             "the solve it paid for"
         ),
     )
-    args = parser.parse_args()
+    return parser
+
+
+def run(args: argparse.Namespace) -> int:
     if not args.base_url:
         raise SystemExit("set AGENTSOLVE_BASE_URL or pass --base-url")
     if args.settled_threshold is not None:
@@ -1447,6 +1874,10 @@ def main() -> int:
                 file=sys.stderr,
             )
     return 0
+
+
+def main() -> int:
+    return run(build_parser().parse_args())
 
 
 if __name__ == "__main__":
