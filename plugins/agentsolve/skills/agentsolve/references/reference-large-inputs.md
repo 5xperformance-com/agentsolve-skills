@@ -1,7 +1,7 @@
 # Input Size Limits
 
 Inline canonical JSON payloads on `POST /v1/quotes` and on MCP calls must be
-no larger than `64 MiB` after canonical encoding. Every other request body is
+no larger than `16 MiB` after canonical encoding. Every other request body is
 capped at `1 MiB`. A body over its cap is refused before authentication with
 HTTP 413 `INVALID_PAYLOAD` and a `rejection_reason` of the form
 `request exceeds <bytes> bytes`; a payload that only exceeds the inline limit
@@ -15,8 +15,7 @@ instance with 400 agents and 200 tasks is about 2.8 MiB, a CVRP instance with
 ## Upload handles
 
 Deployments may enable the API-origin upload path. Where it is enabled, an
-input above the inline limit, or any input you prefer not to embed, goes
-through a handle:
+input you prefer not to embed goes through a handle:
 
 1. `POST /v1/inputs/presign` with `problem_type`, `problem_schema_version`,
    `allowed_regions`, and the commitments `content_sha256` and `size_bytes`
@@ -33,4 +32,5 @@ Handles expire unused after 24 hours and their upload authorization after 15
 minutes. Where uploads are disabled the presign route answers HTTP 503
 `INPUT_UPLOAD_UNAVAILABLE`; keep the inline payload within the limit or reduce
 the instance. The upload limit is the deployment's configured value and never
-exceeds 64 MiB.
+exceeds the 16 MiB inline limit, so an instance larger than 16 MiB after
+canonical encoding must be reduced on either path.

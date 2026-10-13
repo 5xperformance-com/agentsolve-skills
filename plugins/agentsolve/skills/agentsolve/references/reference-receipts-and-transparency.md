@@ -1,6 +1,6 @@
 # Receipts And Transparency
 
-Current receipts use `receipt.v5`. Earlier versions remain immutable and
+Current receipts use `receipt.v6`. Earlier versions remain immutable and
 readable for historical compatibility.
 
 ## Receipt Fields
@@ -19,13 +19,24 @@ costs, and capability fingerprint fields. Domain adapters such as TSP, CVRP,
 RCPSP, and newsvendor may leave some engine-backed fields null while still
 settling with verifier evidence.
 
-`proved_optimal` and `optimality_certified` are backward-compatible
-solver diagnostics guarded by an explicit terminal proof signal. They are not
-verifier certificates, and neither a zero gap nor objective equality creates a
+`proved_optimal` and `optimality_certified` are guarded by an explicit
+terminal proof signal and read `true` only when `established_guarantee` is
+`global_optimality`. An engine's optimality claim the verifier did not prove
+reads `false` there and appears as the solver-sourced `solver_proved` claim in
+`attestation.claims`. Neither a zero gap nor objective equality creates a
 claim.
-`receipt.v5` exposes one `optimality_gap`, not separate absolute and relative
+`receipt.v6` exposes one `optimality_gap`, not separate absolute and relative
 gap fields. To interpret hint choices, consult the originating quote's
 `solver_hints` and compare `solver_hints_hash`.
+
+## Verifying The Delivered Output
+
+`output_sha256` on a `receipt.v6` receipt is the SHA-256 of the exact bytes
+`GET /v1/jobs/{job_id}/output` returns. Keep the receipt with the output you
+downloaded: if the hash of those bytes differs from `output_sha256`, they are
+not the output the verifier attested. `receipt_hash` binds `output_sha256`,
+`job_id`, and `receipt_id`, so a receipt edited to match other bytes, or moved
+to another job, no longer reproduces its own hash.
 
 ## Visibility
 

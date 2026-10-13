@@ -24,6 +24,19 @@ verifier's proof envelope, a valid result can still carry
   reduced-cost visibility limits.
 - MILP: independent feasibility/objective checks; bounds, gaps, and public
   proof flags remain diagnostic.
+- QP: primal feasibility, objective recomputation, dual signs, stationarity,
+  and complementary slackness at the declared tolerance establish
+  `global_optimality` for a convex program as a tolerance envelope, not an
+  exact certificate, so no `independent_certificate` is issued for it; an
+  exact rational Farkas ray establishes infeasibility for proposition
+  `qp.infeasibility`; an `unbounded` engine status is refunded as unverified.
+- Minimum-cost flow: arc bounds, flow conservation, and objective
+  recomputation in exact integer arithmetic; node potentials that pass an exact
+  reduced-cost check establish `global_optimality` with proposition
+  `min_cost_flow.optimality`, a flow without potentials establishes `validity`,
+  and an exact Hoffman cut establishes infeasibility for proposition
+  `min_cost_flow.infeasibility`; an infeasible answer without a cut is
+  refunded as unverified.
 - TSP: route validity, visit coverage, depot return or finish semantics, and
   objective recomputation; receipts additionally carry a solver-sourced
   `proved_optimal` with matching bound and zero gap where an exact engine

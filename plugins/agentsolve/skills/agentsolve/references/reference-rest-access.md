@@ -14,9 +14,17 @@ account, and logical credential IDs. Exact replay returns those IDs without
 redisplaying the one-time migration-recovery code; changed declarations fail
 with `IDENTITY_BOOTSTRAP_CONFLICT`.
 
-The autonomous paid lane is not active: the approved country allowlist is
-empty and staging/production require it off. Do not guess absent registration
-or token endpoints. MCP has no separate bootstrap tool.
+An unclaimed (autonomous) identity pays for each job with exact x402 USDC from
+its own wallet; claiming adds card payments and funded account credit and is
+never required to buy. One jurisdiction policy applies to every customer:
+AgentSolve serves every jurisdiction except BY, CU, IR, KP, RU, SY, UA-09,
+UA-14, UA-40 and UA-43; UA billing must name its region; and x402 is not
+offered in AE, BD, CN, ID, NP, TR, UA-23, UA-65 and ZA. A refused jurisdiction
+gets no quote (403). A refused rail is marked
+`billing_jurisdiction_not_eligible` on the quote and refused at job create with
+`payment_jurisdiction_not_allowed`; pay with another available rail. Do not
+guess absent registration or token endpoints. MCP has no separate bootstrap
+tool.
 
 ## Endpoint Inventory
 
@@ -51,21 +59,35 @@ or token endpoints. MCP has no separate bootstrap tool.
 - `GET /v1/billing/charges`
 - `GET /v1/transparency/changes`
 - `GET /v1/transparency/jobs/{job_id}`
+- `POST /v1/feature-requests`
+- `GET /v1/feature-requests`
+- `GET /v1/feature-requests/{feature_request_id}`
+- `GET /v1/me/feature-requests`
+- `GET /v1/me/feature-requests/{feature_request_id}`
+- `POST /v1/feature-requests/{feature_request_id}/votes`
+- `DELETE /v1/feature-requests/{feature_request_id}/votes`
+- `POST /v1/bug-reports`
+- `GET /v1/bug-reports`
+- `GET /v1/bug-reports/{bug_report_id}`
 
-Public requests use inline canonical JSON capped at `1 MiB`. Upload handles are
-disabled outside local development; larger payloads are not accepted in the
-current public posture.
+Inline canonical JSON on `POST /v1/quotes` is capped at `16 MiB` after canonical
+encoding, and every other request body at `1 MiB`. Upload handles are
+available only where a deployment enables them; see
+[reference-large-inputs.md](reference-large-inputs.md).
 
 ## Authorization
 
-Send the managed API credential as an HTTP bearer token. Discovery and public
-transparency-change metadata are public. Tenant operations require exactly the
-published scope:
+Send the managed API credential as an HTTP bearer token. Discovery,
+public transparency-change metadata, and the two public feature-request reads
+(`GET /v1/feature-requests` and `GET /v1/feature-requests/{feature_request_id}`)
+are public. Tenant operations require exactly the published scope:
 
-- `read`: job, dispute, and job-transparency reads;
+- `read`: job, dispute, and job-transparency reads, plus your own
+  feature-request (`/v1/me/feature-requests`) and bug-report reads;
 - `quote:create`: quotes;
 - `job:create`: jobs and quote-bound Stripe PaymentIntent preflight;
-- `job:write`: cancellation, disputes, and reexecution;
+- `job:write`: cancellation, disputes, reexecution, feature-request and
+  bug-report creation, and feature-request votes;
 - `billing:read`: billing summary, itemized charges, balance, and authority
   listing; and
 - `billing:write`: top-ups, funding links, and authority create/revoke.
@@ -79,9 +101,43 @@ mechanism, and the contract loses nothing by it.
 
 ## Idempotency
 
-`POST /v1/quotes`, `POST /v1/jobs`, dispute creation, and reexecution creation
-carry an idempotency key in the JSON body. Reusing a key with different
-material inputs must be treated as an idempotency conflict.
+`POST /v1/quotes`, `POST /v1/jobs`, dispute creation, reexecution creation,
+`POST /v1/feature-requests`, and `POST /v1/bug-reports` carry an idempotency
+key in the JSON body. Reusing a key with different material inputs must be
+treated as an idempotency conflict.
+
+## Feature Requests and Bug Reports
+
+The full lifecycle, statuses and limits are in
+[feedback and bug reports](reference-feedback-and-bug-reports.md).
+
+A new feature request or bug report is private and starts `pending_review`;
+a feature request also carries your own vote. An operator approval publishes a
+feature request. Pending and rejected requests are not searchable, ranked or
+votable, and you read them only through your creation response or
+`GET /v1/me/feature-requests`. Bug reports are private to you and the operator
+in every status. A published request is public, so neither kind may contain
+secrets, payloads or personal data, and a declared `blocking` severity does not
+bypass screening or limits.
+
+Repeating a creation with the same key returns the stored record with `200` and
+spends no new fresh allowance or queue slot. A key reused with different
+material or for the other kind is `409 IDEMPOTENCY_CONFLICT`. Identical
+material still pending under a new key is `400 INVALID_PAYLOAD` with
+`details.rejection_reason=duplicate_pending_submission` and your existing id.
+
+Every attempt spends the request allowance of its kind, including failures and
+replays. A fresh item also spends a separate daily quota, and feature and bug
+allowances and queues are separate. Votes spend their allowance only when
+recorded. A full pending queue is `429 RATE_LIMITED` with `Retry-After: 3600`
+and `details.extra.bucket` (`pending_feature_requests` or
+`pending_bug_reports`); the interval is a suggestion, not a reserved slot. A
+feedback suspension is `403 AUTHENTICATION_REQUIRED` with
+`details.rejection_reason=feedback_suspended` on fresh submissions and voting;
+reads, replays and vote withdrawal still work. Hidden, foreign and unknown ids
+are all `404 JOB_NOT_FOUND`, with `details.field_name` naming
+`feature_request_id`, `bug_report_id` or `job_id`. List routes refuse unknown
+query parameters with `400`.
 
 ## Job Creation
 

@@ -112,7 +112,9 @@ class FundingError(SystemExit):
 
 
 def _retryable_rate_limit(status: int, detail: str) -> bool:
-    """A 429 whose body does not explicitly say retryable=false."""
+    """A 429 whose body does not explicitly say retryable=false, unless the
+    body says the payment authorization was already consumed — replaying
+    that request would retry a payment, not just a queue admission."""
     if status != 429:
         return False
     try:
@@ -120,17 +122,19 @@ def _retryable_rate_limit(status: int, detail: str) -> bool:
     except json.JSONDecodeError:
         return True
 
-    def find(node: Any) -> bool | None:
+    def find(node: Any, key: str) -> bool | None:
         if isinstance(node, dict):
-            if "retryable" in node:
-                return bool(node["retryable"])
+            if key in node:
+                return bool(node[key])
             for value in node.values():
-                found = find(value)
+                found = find(value, key)
                 if found is not None:
                     return found
         return None
 
-    found = find(parsed)
+    if find(parsed, "authorization_consumed"):
+        return False
+    found = find(parsed, "retryable")
     return True if found is None else found
 
 

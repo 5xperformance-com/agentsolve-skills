@@ -99,6 +99,10 @@ independence claims with the receipt's `degraded_mode` and
    output and receipt together
    ([receipts](references/reference-receipts-and-transparency.md)).
 
+Missing capability or a defect: search published feature requests and vote,
+or file a feature request or private bug report
+([feedback](references/reference-feedback-and-bug-reports.md)).
+
 ## Non-guarantees and guardrails
 
 No optimality claim without certifying evidence; no every-domain
@@ -108,15 +112,16 @@ internals, no provider-native payloads, no inferred support for deferred
 variants.
 
 Launch-scoped classes: `1.1.tsp`, `1.2.vrp.cvrp`, `2.1.lp`, `2.2.milp`,
-`3.1.newsvendor`, `4.1.scheduling.rcpsp`, `4.2.scheduling.jssp`,
+`2.3.qp`, `3.1.newsvendor`, `4.1.scheduling.rcpsp`, `4.2.scheduling.jssp`,
 `4.3.scheduling.rostering`, `5.1.assignment`, `9.1.knapsack`,
-`9.2.set_cover`, `9.3.bin_packing`.
+`9.2.set_cover`, `9.3.bin_packing`, `6.1.min_cost_flow`.
 
 Per-class recipes (read only the selected class):
 [tsp](references/problem-type-tsp.md),
 [vrp-cvrp](references/problem-type-vrp-cvrp.md),
 [lp](references/problem-type-lp.md),
 [milp](references/problem-type-milp.md),
+[qp](references/problem-type-qp.md),
 [newsvendor](references/problem-type-newsvendor.md),
 [rcpsp](references/problem-type-rcpsp.md),
 [jssp](references/problem-type-jssp.md),
@@ -124,7 +129,8 @@ Per-class recipes (read only the selected class):
 [assignment](references/problem-type-assignment.md),
 [knapsack](references/problem-type-knapsack.md),
 [set-cover](references/problem-type-set-cover.md),
-[bin-packing](references/problem-type-bin-packing.md).
+[bin-packing](references/problem-type-bin-packing.md),
+[min-cost-flow](references/problem-type-min-cost-flow.md).
 
 Modelling guidance:
 [routing](references/method-combinatorial-routing.md),

@@ -35,9 +35,13 @@ rules, minimizing exact integer target and fairness penalties.
 - `assignment_costs` charges an integer cost when a `(staff_id, slot_id)` pair
   is assigned, so an unwelcome-but-legal shift can be priced instead of banned.
 - The price tier uses `staff_count * slot_count` — `S` <= 750,
-  `M` 751–12,000, `L` >= 12,001 — but measured evidence also depends on
+  `M` 751–12,000, `L` 12,001–1,000,000 — but measured evidence also depends on
   eligible-pair and skill density, coverage structure, and potential rest
-  conflicts. An open-ended L tier is not an unlimited-capacity claim.
+  conflicts. The L tier is not a capacity claim across that range.
+- Size limits: at most 2,000 staff, 5,000 slots, and 1,000,000 staff-slot
+  pairs; 50 skills and 500 unavailable intervals per member; 20 requirements
+  per slot; and 1,000,000 entries in each assignment list. Larger rosters are
+  refused as schema errors.
 
 ## Deferrals
 

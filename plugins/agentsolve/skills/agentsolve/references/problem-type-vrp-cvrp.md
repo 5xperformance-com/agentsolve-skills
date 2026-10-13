@@ -36,9 +36,13 @@ backend-specific model.
   vehicles may serve that customer. Omit it for customers any vehicle may
   serve.
 - Complexity tier: CVRP customer-count tiers are `S <= 25`, `M <= 75`, and
-  `L > 75`, excluding the depot. The open-ended L band is not a capacity or
-  latency guarantee. Inspect vehicle count, matrix and eligibility density,
-  time constraints, pickup-delivery pairs, and depots in the quote descriptor.
+  `L` 76-2,499, excluding the depot. The L band is not a capacity or latency
+  guarantee. Inspect vehicle count, matrix and eligibility density, time
+  constraints, pickup-delivery pairs, and depots in the quote descriptor.
+- Size limits: at most 2,500 nodes (depots plus customers, so at most 2,499
+  customers), 1,000 vehicles (`vehicle_count` and `vehicles`), 100 additional
+  `depots`, 1,249 `pickup_delivery_pairs`, and 1,000 entries per
+  `eligible_vehicles` list. Larger instances are refused as schema errors.
 
 ## Deferrals And Routing Choices
 

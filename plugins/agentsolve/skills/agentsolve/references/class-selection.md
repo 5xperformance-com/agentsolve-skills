@@ -25,7 +25,13 @@ creating a quote.
 | "choose which warehouse opens" | `2.2.milp` | Binary open decisions make it MILP. |
 | "our feasibility tolerance is looser than the default" | `2.2.milp` input v2 | Declare `metadata.feasibility_tolerance`; v2 hashes it and the verifier judges at the value you declared. |
 | "optimize profit and emissions and return a Pareto frontier" | typed deferral `native_multi_objective_optimization` | A caller-approved scalar objective is a different decision. |
-| "quadratic risk minimization" | typed deferral `quadratic_or_conic_optimization` | Do not silently linearize. |
+| "quadratic risk minimization / minimize variance subject to linear constraints" | `2.3.qp` | Enter a covariance `Σ` as `coeff_ii = Σ_ii` and `coeff_ij = 2Σ_ij`; do not silently linearize. |
+| "constrained least squares / curve fit with bounds" | `2.3.qp` | Expand `‖Nx − t‖²` into quadratic and linear objective terms; the rows stay linear. |
+| "smoothing or regularization with a quadratic penalty over a linear model" | `2.3.qp` | The penalty is a convex quadratic objective term; the model's rows stay linear. |
+| "use at most K of the options, or pay a fixed charge for using one" | typed deferral `quadratic_integer_variables` | Cardinality limits and fixed charges need integer decisions; `2.3.qp` is continuous. |
+| "robust coefficient set / ellipsoidal uncertainty" | typed deferral `quadratic_or_conic_optimization` | A robust counterpart is a conic program; no canonical schema accepts a cone. |
+| "non-convex quadratic (indefinite) objective" | typed deferral `nonconvex_quadratic_objective` | `2.3.qp` needs a positive-semidefinite form under `minimize` and a negative-semidefinite one under `maximize`. |
+| "quadratic constraint" | typed deferral `quadratic_constraint` | Constraint rows stay linear. |
 | "chance constrained capacity planning" | typed deferral `chance_constrained_optimization` | Expected-value modelling is not a chance constraint. |
 | "how many units should we stock for one sale period" | `3.1.newsvendor` | Explicit independent discrete SKU scenarios. |
 | "inventory policy over the next 12 months" | typed deferral `multi_period_inventory` | One static ordering period only. |
@@ -65,6 +71,12 @@ creating a quote.
 | "choose the cheapest sets covering every element" | `9.2.set_cover` | Weighted set multicover; set `demand` per element (default 1). |
 | "each element needs several independent covers" | `9.2.set_cover` | Set the element's `demand` to the required cover count. |
 | "we can leave an element uncovered for a penalty" | `9.2.set_cover` | Set the element's `uncovered_penalty` to the per-unit cost of leaving it short. |
+| "ship goods from plants to customers through depots at least cost" | `6.1.min_cost_flow` | Supplies positive, demands negative, sum zero; costs per unit in declared fixed-precision units. |
+| "transportation or transshipment problem" | `6.1.min_cost_flow` | Supplies positive, demands negative, sum zero; costs per unit in declared fixed-precision units. |
+| "a depot can handle at most X units" | `6.1.min_cost_flow` | Split the node: in-node → out-node arc with `upper` X. |
+| "several products share the same trucks or pipes" | `2.1.lp` | Multi-commodity flow is a linear program over per-commodity arc variables. |
+| "a route costs a fixed amount to open" | `2.2.milp` | Binary open decisions make it MILP. |
+| "deliver as much as possible when supply falls short" | typed deferral `flow_supply_demand_imbalance` | Add a shortfall sink with the missing demand and a penalty cost, then the supplies balance. |
 | "send this OR-Tools or HiGHS native payload" | typed deferral `provider_native_payload_required` | Submit the canonical AgentSolve schema. |
 
 Read the selected class reference and the live discovered schema before

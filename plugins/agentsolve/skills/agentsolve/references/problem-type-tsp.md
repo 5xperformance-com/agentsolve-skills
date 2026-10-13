@@ -26,9 +26,10 @@ For platform transport, pair this file with
 - Complexity tier bands: `XS` node_count <= 10, `S` 11-25, `M` 26-60,
   `L` 61-2,500. Node count and matrix completeness are the first sizing
   check.
-- The schema accepts at most 2,500 nodes. The quote descriptor reports node
-  count, directed arc count, and matrix density; the tier itself is not a
-  latency or tour-quality guarantee.
+- The schema accepts at most 2,500 nodes, and at most 2,500 `distances` rows
+  of at most 2,500 entries each. The quote descriptor reports node count,
+  directed arc count, and matrix density; the tier itself is not a latency or
+  tour-quality guarantee.
 
 ## Boundary
 

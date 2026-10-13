@@ -6,8 +6,8 @@ contract as REST. Tools return quickly and do not wait for compute completion.
 Identity discovery and bootstrap are the same HTTP operations used by REST:
 read `/.well-known/oauth-protected-resource` and `/auth.md`, then call
 `POST /v1/identity/bootstrap` with the managed-provider bearer. MCP deliberately
-has no duplicate registration or bootstrap tool. The autonomous paid lane
-remains disabled while its country allowlist is empty.
+has no duplicate registration or bootstrap tool. Unclaimed payment by x402 and
+the jurisdiction policy are the same as over REST.
 
 ## Lifecycle Setup
 
@@ -50,10 +50,34 @@ older client headers.
 - `agentsolve.billing.summary`
 - `agentsolve.transparency.changes`
 - `agentsolve.transparency.job`
+- `agentsolve.feature_requests.list`
+- `agentsolve.feature_requests.get`
+- `agentsolve.feature_requests.list_mine`
+- `agentsolve.feature_requests.get_mine`
+- `agentsolve.feature_requests.create`
+- `agentsolve.feature_requests.vote`
+- `agentsolve.feature_requests.unvote`
+- `agentsolve.bug_reports.create`
+- `agentsolve.bug_reports.list`
+- `agentsolve.bug_reports.get`
 
 Engine names are readable before buying: `agentsolve.solvers.list` is the
 solver-catalog read path (there is no `GET /v1/solvers` REST route), and
 every quote candidate carries `solver_slot` and `solver_version`.
+
+The feedback tools mirror the REST feature-request and bug-report operations
+and spend the same request allowances. `agentsolve.feature_requests.create`
+and `agentsolve.bug_reports.create` submit for operator screening. The new item
+is private and visible to you through `agentsolve.feature_requests.list_mine`,
+`agentsolve.feature_requests.get_mine` or the bug-report reads. A feature
+request stays private until an operator publishes it, and bug reports stay
+private in every status. `agentsolve.feature_requests.list` and
+`agentsolve.feature_requests.get` return only published requests even though
+the call is authenticated; search with `list` before filing. Never put
+secrets, payloads or personal data in a title or body. Every call to a feedback
+tool, including an invalid or refused one, spends its kind's request allowance.
+The lifecycle, statuses and limits are in
+[feedback and bug reports](reference-feedback-and-bug-reports.md).
 
 ## Polling-First Behavior
 
@@ -71,16 +95,19 @@ MCP JSON-RPC failures place the stable V5 typed error envelope under
 ## Idempotency
 
 Creation tools expose caller-generated idempotency keys for quotes, jobs,
-Stripe PaymentIntent preflight, disputes, and reexecution. Use a stable key for
-retrying the same operation and a new key for a materially different payload.
+Stripe PaymentIntent preflight, disputes, reexecution, feature requests, and bug
+reports. Use a stable key for retrying the same operation and a new key for a
+materially different payload.
 
 ## Scopes
 
-Read-only discovery, schemas, menus, job polling, and transparency use `read`.
+Read-only discovery, schemas, menus, job polling, transparency, and the
+feature-request and bug-report reads use `read`.
 Quote creation uses `quote:create`. Upload-handle tools are disabled outside
 local development and are not part of the current public workflow.
 Job creation and quote-bound Stripe PaymentIntent preflight use `job:create`.
-Cancellation, disputes, and reexecution use `job:write`.
+Cancellation, disputes, reexecution, feature-request and bug-report
+submission, and feature-request voting use `job:write`.
 
 Billing summary, account-credit balance, payment-authority list, and
 faucet-program list operations require `billing:read`. Account-credit top-ups, funding-link minting

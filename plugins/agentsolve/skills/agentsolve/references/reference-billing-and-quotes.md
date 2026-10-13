@@ -31,7 +31,7 @@ satisfiable option or is null; when null, read `funding_guidance`.
 
 Use `/v1/billing/summary` and `/v1/billing/charges` with `billing:read` for
 billing read models.
-Receipt `receipt.v5` is current; older receipt versions are immutable legacy.
+Receipt `receipt.v6` is current; older receipt versions are immutable legacy.
 
 ## Funding Paths
 

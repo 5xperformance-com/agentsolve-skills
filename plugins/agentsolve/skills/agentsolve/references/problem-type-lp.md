@@ -30,16 +30,22 @@ linear constraints. The adoption surface teaches the canonical V5 payload only.
 ## Out-Of-Scope Boundaries
 
 `2.1.lp` accepts one scalar linear objective over continuous variables.
-The requests below are out of scope; the ROADMAP reserves typed-deferral
-codes for them, but the current runtime rejects such payloads at schema
-validation (`SCHEMA_VALIDATION`) without emitting the codes — screen for
-these needs before quoting rather than waiting for a typed deferral:
+A quadratic objective or a quadratic constraint row returns the typed
+deferral `quadratic_or_conic_optimization` with `nearest_supported_subset`
+`2.3.qp`. The other requests below are out of scope; the ROADMAP reserves
+typed-deferral codes for them, but the current runtime rejects such payloads
+at schema validation (`SCHEMA_VALIDATION`) without emitting the codes — screen
+for these needs before quoting rather than waiting for a typed deferral:
 
-- deferral code `quadratic_or_conic_optimization` — quadratic or conic terms
+- deferral code `quadratic_or_conic_optimization` — conic terms
 - deferral code `native_multi_objective_optimization` — native
   multi-objective frontiers
 - deferral code `provider_native_payload_required` — provider-native
   payloads; submit the canonical schema instead
+
+A convex quadratic objective over continuous variables with linear constraints
+is its own class: select `2.3.qp` ([problem-type-qp.md](problem-type-qp.md))
+rather than returning a deferral.
 
 Weighted-sum single-objective LP/MILP reformulation is allowed when
 the caller accepts fixed weights. Goal-programming single-objective LP/MILP
