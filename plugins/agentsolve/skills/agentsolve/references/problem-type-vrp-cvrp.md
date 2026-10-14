@@ -26,6 +26,11 @@ backend-specific model.
   default `vehicle_fixed_cost`, `customers[].eligible_vehicles`, hard
   `time_windows`, `service_times`, complete directed `travel_times`, and
   `route_duration_limit`.
+- Timed routes (`travel_times` with hard `time_windows`, `service_times` or
+  `route_duration_limit`) are offered only to engines that declare them; the
+  quote lists the engines that do. On a large timed route an engine can end
+  without a first plan within its budget; the job is then refunded with
+  `OUTPUT_CONTRACT_VIOLATION`, and a longer budget does not guarantee a plan.
 - Objective: minimize one scalar total cost — the sum of traversed `distances`
   entries plus the `fixed_cost` of every vehicle that serves at least one
   customer. With no fixed costs this is the classic total-distance objective.
