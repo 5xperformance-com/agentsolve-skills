@@ -24,7 +24,7 @@ All agent-facing failures use the stable V5 error envelope with `code`,
 | `ROUTING_MODE_NOT_SPECIFIED` | Include exactly one routing mode on job creation. |
 | `ROUTING_MODE_AMBIGUOUS` | Send only one of `auto_route` / `selected_algorithms`. |
 | `SELECTED_ALGORITHM_NOT_IN_QUOTE` | Select only solver admission ids the quote offered. |
-| `COHORT_SIZE_EXCEEDED` | Portfolio jobs take at most 10 solver admission ids. |
+| `COHORT_SIZE_EXCEEDED` | Portfolio jobs take at most 10 solver admission ids, and at most the number this capacity can start within the first-dispatch bound at the quoted budget: the quote's `PORTFOLIO_LIMITED_BY_CAPACITY` warning states it and the refusal's `details.extra.max_cohort_size_at_budget` repeats it. Not retryable: select fewer solvers. |
 | `COHORT_HEAD_REQUIRED` | Cancel a portfolio only through its cohort head job; the response names the head job's ID. |
 | `UNSUPPORTED_FAILOVER_MODE` | Set `policy.failover_mode` to `strict`; Stage 0 does not implement any other failover posture. |
 | `MODE_3_NO_ELIGIBLE_CANDIDATE` | Relax the policy or select a solver explicitly. |
@@ -57,7 +57,7 @@ the same solver and the same outcome. You are never charged for a refunded job.
 | Code | Meaning | Recovery |
 |---|---|---|
 | `NON_ZERO_EXIT` | The solver process failed on this input. | Not retryable as-is: select another admitted solver or reduce the instance. |
-| `TIME_LIMIT_EXCEEDED` | The solver was stopped at its wall budget without a result. | Not retryable as-is: raise `time_limit_seconds` where the class applies it, or select another solver. |
+| `TIME_LIMIT_EXCEEDED` | The solver was stopped at its wall budget without a result. | Not retryable as-is: raise `time_limit_seconds` where the class applies it, up to the ten-minute purchasable ceiling (600 seconds), or select another solver. |
 | `MEMORY_LIMIT_EXCEEDED` | The solver exceeded its memory envelope. | Not retryable as-is: reduce the instance or select another solver. |
 | `OUTPUT_CONTRACT_VIOLATION` | The solver ended without a result the class accepts: no solution, or unreadable or schema-invalid output. | Not retryable as-is: select another solver. |
 | `SECURITY_POLICY_VIOLATION` | The solver violated the runtime's isolation policy. | Not retryable; report it. |
@@ -69,17 +69,22 @@ the same solver and the same outcome. You are never charged for a refunded job.
 
 ## Observed Rate-Limit and Replay Shapes
 
-- **HTTP 429 `RATE_LIMITED`** on job creation: read
+- **HTTP 429 `RATE_LIMITED`** on job creation with
+  `details.rejection_reason == "execution queue at capacity"`: the execution
+  slots cannot start this work within the 15-minute first-dispatch bound.
+  The refusal always carries `Retry-After` (also
+  `details.extra.retry_after_seconds`), the projected time for the queue to
+  make room, and it is given before any payment moves on every rail. Read
   `details.extra.authorization_consumed`. When it is absent or `false`
-  (Stripe, account credit, trial credit; `retryable: true`) wait, honouring
-  `Retry-After` when present, and retry the identical request with the same
-  idempotency key; `tools/submit.py` does this automatically (bounded
-  attempts with jitter). When it is `true` (`retryable: false`: an x402
-  payment that settled before the refusal) the settled amount is credited to
-  the account: wait, honouring `Retry-After` when present, then resubmit the
-  same job request (same quote, same idempotency key) paying from account
-  credit with `details.extra.remedy_payment_authority_id` (also listed by
-  `GET /v1/payments/authorities`). Replaying the same signed payment is
+  (Stripe, account credit, trial credit; `retryable: true`) wait
+  `Retry-After`, then retry the identical request with the same idempotency
+  key; `tools/submit.py` does this automatically (bounded attempts with
+  jitter). When it is `true` (`retryable: false`: an x402 payment that
+  settled in the moment between the pre-payment check and the final one)
+  the settled amount is credited to the account: wait `Retry-After`, then
+  resubmit the same job request (same quote, same idempotency key) paying
+  from account credit with `details.extra.remedy_payment_authority_id`
+  (also listed by `GET /v1/payments/authorities`). Replaying the same signed payment is
   refused with 402 `PAYMENT_AUTH_FAILED`, and a fresh x402 signature needs a
   fresh quote, which an autonomous account can take only after this one
   expires. Prefer the tool's own multi-document batching

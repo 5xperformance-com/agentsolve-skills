@@ -37,9 +37,16 @@ For account-credit flows, a human/account owner first buys credit through
 PaymentIntent outside AgentSolve's card-data boundary; that top-up endpoint
 requires `billing:write`. The simplest handoff is a funding link: call
 `POST /v1/payments/account-credit/funding-links` (`billing:write`) and give
-the returned URL to your human, who picks an amount (10.00 USD minimum) and
+the returned URL to your human, who picks an amount (5.00 USD minimum) and
 pays on AgentSolve's hosted top-up page — the card and SCA never touch the
-agent. The account or owner then creates a
+agent. Account credit never expires.
+An owner registered as a consumer must top up on that hosted page: it records
+the consumer's express request that the credit be usable straight away and
+their acknowledgement of the cancellation right, and a REST or MCP top-up
+cannot carry either. A consumer's REST or MCP top-up is refused with `400` and
+`consumer_acknowledgement_required`; send a consumer owner to a funding link.
+After paying, the page offers a saveable confirmation of the purchase and the
+Terms version it was made under. The account or owner then creates a
 `PaymentAuthority` through `POST /v1/payments/authorities`, which also requires
 `billing:write`. Agents may spend only by submitting `{"rail":"account_credit",
 "payment_authority_id":"pauth_..."}` on `POST /v1/jobs`; they never submit lot
@@ -50,8 +57,8 @@ this caller, class, and amount — submit exactly that id rather than picking
 one from `GET /v1/payments/authorities`, which can choose an authority the
 server will reject.
 
-Authorities have a lifecycle: every authority carries an `expires_at`, and an
-authority can be revoked. An expired or revoked authority removes the
+Authorities have a lifecycle even though credit does not: every authority
+carries an `expires_at`, and an authority can be revoked. An expired or revoked authority removes the
 account-credit option from quotes even when credit is available; the quote
 then reports `payment_authority_expired` or `payment_authority_revoked` on
 the option and names the recovery in `funding_guidance`. The self-heal is one
@@ -71,8 +78,14 @@ amount, payee, timeout, and single-use proof. Do not reuse an x402 payload on
 another quote or job; replayed proofs are rejected.
 
 x402 settles USDC before job persistence and execution; it cannot be voided
-like a card authorization. A failed or refunded x402 job is remedied with
-spendable account credit; the on-chain transfer itself is not reversed.
+like a card authorization. Businesses receive remedy credit. Consumers receive
+USDC back to the paying wallet unless they expressly selected
+`x402_refund_preference: "account_credit"` at registration. Do not make that
+choice from spending permission alone. A pending USDC refund is unspendable;
+`pending_refund_amount_usdc` reports it. AgentSolve pays the sending network
+fee and returns it without undue delay, within 14 days of cancellation or
+agreement that a refund is due. Contact `hello@agentsolve.io` with the
+transaction hash if assistance is needed.
 Whether x402 is available for a given quote is a quote fact: read the
 quote's payment options and use what the quote offers.
 
@@ -101,6 +114,35 @@ approves UK seller access or AgentSolve uses an eligible US seller profile.
 For trial credits, pass the redemption material through the documented
 trial-credit fields and preserve the quote/job idempotency keys. Trial-credit
 tax and fee treatment is visible in `receipt.v5`.
+
+## Service area, cancellation and terms
+
+AgentSolve serves the US and the UK. Card funding and account-credit top-ups
+are available to billing countries `US` and `GB` only; credit already held
+stays spendable. A consumer may cancel a card top-up within 14 days of paying:
+email `hello@agentsolve.io` with the account and top-up ID, and the unspent
+remainder is refunded to the card within 14 days; jobs run before cancelling
+are paid from the top-up. A consumer may cancel a job by email before it is
+fully performed, which usually takes minutes.
+
+Before creating a consumer job, obtain the consumer's express request to
+start immediately and acknowledgement that cancellation rights end on full
+performance. Send the current terms version in `consumer_start_acknowledgement`
+only with authority for both statements. The bundled tools accept that version
+through `AGENTSOLVE_CONSUMER_START_TERMS_VERSION`; they never infer consent from
+a payment budget or enable it automatically. A refusal with
+`express_consumer_request_required` requires obtaining those instructions.
+
+Every job's purchase confirmation is `GET /v1/jobs/{job_id}/confirmation`
+(`read` scope), linked in the `AgentSolve-Confirmation` response header on job
+creation and in the MCP job tool's result. It states the price, rail, Terms
+version, seller and cancellation notice, and does not change after it is
+issued.
+
+A new registration's `POST /v1/identity/bootstrap` must name the current
+version of each policy: `terms`, `privacy`, `x402_remedy` and `data_processing`.
+`GET /auth.md` lists the current versions; any other version is refused with
+`INVALID_PAYLOAD`, naming the policy and its current version.
 
 Do not invent alternate payment rails. Billing read models live in
 [reference-billing-and-quotes.md](reference-billing-and-quotes.md).

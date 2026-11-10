@@ -15,16 +15,36 @@ any `solver_hints_hash`. When the quote bound hints (anything sent under
 The two layers use different names and units for the same bound:
 `constraints.time_budget_ms` (milliseconds, quote-side) folds into the
 hint `time_limit_seconds` (seconds, job-side) — the quote does the
-conversion; never hand-build the hint. A larger `time_budget_ms` does not
-change the quote price today: solve time is not yet a priced dimension,
-so a bigger budget costs the same as a small one and price is no signal
-of whether more time is worth buying — read the receipts instead.
+conversion; never hand-build the hint. A larger `time_budget_ms` raises the
+quote price: every second beyond the 120-second included budget is priced at
+the published extended-time rate (0.35 USDC per hour, rounded up to the
+cent) and shown as `price_components.extended_time_allowance_usdc`. The
+purchasable budget is capped at ten minutes (600 seconds) at launch
+capacity: a quote asking for more, through `constraints.time_budget_ms`,
+`constraints.solver_hints.time_limit_seconds` or the input's
+`metadata.time_limit_seconds`, is refused with `422 INVALID_PAYLOAD`,
+`details.field_name` naming the field and
+`details.extra.max_purchasable_solve_budget_seconds` the ceiling; ask for
+at most that. Whether more time is worth buying is a question for the
+receipts, not the price.
 It also returns the exact-input
 `instance_descriptor`, a top-level `estimate_basis`, and candidate
 `evidence_scope_state` values. `catalog_projection` is an estimate, not a
-measured latency or quality guarantee. Callers that require measured scope can
-set `policy.minimum_evidence_state` to `qualification_only` or
-`production_observed`; the default remains `declared_only`.
+measured latency or quality guarantee. A candidate with a verified
+qualification run in the quoted size region carries `qualification_only`
+evidence: `qualification_observation_count` counts the runs in that region,
+`tested_size_regions` lists every region the solver qualified in, and
+`tested_feature_envelope` bounds the tested case. A job intent no
+qualification run measured, named in the summary's `job_intent`, is outside
+the measured evidence. A region with no qualification run, such as TSP `XS`,
+stays `declared_only`.
+`production_observation_count` is 0 on quotes. Callers that require measured
+scope can set `policy.minimum_evidence_state` to `qualification_only` or
+`production_observed`; the default remains `declared_only`. Each candidate the
+filter drops appears in `policy_eliminations` as `solver_filtered`, with detail
+`"<solver_slot>: minimum_evidence_state <state>"`. When it drops every
+candidate, the quote fails with `NO_ELIGIBLE_SOLVER` and the rejection reason
+names the filter and the number of solvers dropped.
 The quote also returns a quote-bound
 `payment_requirement` with ranked payment options. `default_rail` names a
 satisfiable option or is null; when null, read `funding_guidance`.

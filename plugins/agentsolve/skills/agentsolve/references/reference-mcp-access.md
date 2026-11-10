@@ -6,8 +6,9 @@ contract as REST. Tools return quickly and do not wait for compute completion.
 Identity discovery and bootstrap are the same HTTP operations used by REST:
 read `/.well-known/oauth-protected-resource` and `/auth.md`, then call
 `POST /v1/identity/bootstrap` with the managed-provider bearer. MCP deliberately
-has no duplicate registration or bootstrap tool. Unclaimed payment by x402 and
-the jurisdiction policy are the same as over REST.
+has no duplicate registration or bootstrap tool. Unclaimed payment by x402, the
+jurisdiction policy (US and UK only), and the current-policy-version check at
+registration are the same as over REST.
 
 ## Lifecycle Setup
 
@@ -110,7 +111,8 @@ Cancellation, disputes, reexecution, feature-request and bug-report
 submission, and feature-request voting use `job:write`.
 
 Billing summary, account-credit balance, payment-authority list, and
-faucet-program list operations require `billing:read`. Account-credit top-ups, funding-link minting
+faucet-program list operations require `billing:read`. Account-credit top-ups (refused for a consumer owner with
+`consumer_acknowledgement_required`; mint a funding link instead), funding-link minting
 (`agentsolve.payments.funding_links.create` mints a signed funding-link URL a
 human opens to buy account credit), and payment-authority create/revoke
 operations require `billing:write`. The `mcp:*` wildcard is not a billing

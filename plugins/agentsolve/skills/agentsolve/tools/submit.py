@@ -590,6 +590,9 @@ def job_body(
         ),
         "quote_token": quote["quote_token"],
     }
+    acknowledgement = os.environ.get("AGENTSOLVE_CONSUMER_START_TERMS_VERSION", "").strip()
+    if acknowledgement:
+        body["consumer_start_acknowledgement"] = acknowledgement
     body.update(routing_body)
     effective_hints = quote.get("effective_solver_hints")
     if effective_hints:

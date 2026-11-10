@@ -16,13 +16,16 @@ with `IDENTITY_BOOTSTRAP_CONFLICT`.
 
 An unclaimed (autonomous) identity pays for each job with exact x402 USDC from
 its own wallet; claiming adds card payments and funded account credit and is
-never required to buy. One jurisdiction policy applies to every customer:
-AgentSolve serves every jurisdiction except BY, CU, IR, KP, RU, SY, UA-09,
-UA-14, UA-40 and UA-43; UA billing must name its region; and x402 is not
-offered in AE, BD, CN, ID, NP, TR, UA-23, UA-65 and ZA. A refused jurisdiction
-gets no quote (403). A refused rail is marked
-`billing_jurisdiction_not_eligible` on the quote and refused at job create with
-`payment_jurisdiction_not_allowed`; pay with another available rail. Do not
+never required to buy. One jurisdiction policy applies to every customer: AgentSolve serves the
+US and the UK only. A claim is requested by emailing `hello@agentsolve.io`; staff
+complete it. A billing country outside those two is not served, and BY, CU, IR,
+KP, RU, SY, UA-09, UA-14, UA-40 and UA-43 keep their own sanctions refusal
+reasons; UA billing must name its region. x402 is not offered in AE, BD, CN,
+ID, NP, TR, UA-23, UA-65 and ZA. A refused jurisdiction gets no quote (403). A
+refused rail is marked `billing_jurisdiction_not_eligible` on the quote and
+refused at job create with `payment_jurisdiction_not_allowed`; pay with another
+available rail. A new registration must name the current policy versions
+(`GET /auth.md`). Do not
 guess absent registration or token endpoints. MCP has no separate bootstrap
 tool.
 
@@ -42,6 +45,7 @@ tool.
 - `GET /v1/jobs`
 - `GET /v1/jobs/{job_id}`
 - `GET /v1/jobs/{job_id}/output`
+- `GET /v1/jobs/{job_id}/confirmation`
 - `DELETE /v1/jobs/{job_id}`
 - `POST /v1/jobs/{job_id}/disputes`
 - `POST /v1/jobs/{job_id}/reexecute`
@@ -82,7 +86,7 @@ public transparency-change metadata, and the two public feature-request reads
 (`GET /v1/feature-requests` and `GET /v1/feature-requests/{feature_request_id}`)
 are public. Tenant operations require exactly the published scope:
 
-- `read`: job, dispute, and job-transparency reads, plus your own
+- `read`: job, job-confirmation, dispute, and job-transparency reads, plus your own
   feature-request (`/v1/me/feature-requests`) and bug-report reads;
 - `quote:create`: quotes;
 - `job:create`: jobs and quote-bound Stripe PaymentIntent preflight;
@@ -90,7 +94,9 @@ are public. Tenant operations require exactly the published scope:
   bug-report creation, and feature-request votes;
 - `billing:read`: billing summary, itemized charges, balance, and authority
   listing; and
-- `billing:write`: top-ups, funding links, and authority create/revoke.
+- `billing:write`: top-ups, funding links, and authority create/revoke. A
+  consumer owner's top-up goes through a funding link, because the REST top-up
+  is refused with `consumer_acknowledgement_required`.
 
 An empty scope set grants nothing. `mcp:*` never substitutes for a billing
 scope.

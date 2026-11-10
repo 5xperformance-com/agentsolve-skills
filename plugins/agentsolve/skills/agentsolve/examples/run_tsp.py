@@ -14,8 +14,8 @@ from urllib import error, request
 PROBLEM_TYPE = "1.1.tsp"
 INPUT_SCHEMA_VERSION = "1.1.tsp.input.v1"
 OUTPUT_SCHEMA_VERSION = "1.1.tsp.output.v1"
-EXAMPLE_ID = "tsp-seeded-001"
-CANONICAL_PROBLEM_HASH = "3ebb48a536cc637da95c4df9553b8b9a21647128610e3fee09cf3c65b52507e0"
+EXAMPLE_ID = "tsp-seeded-002"
+CANONICAL_PROBLEM_HASH = "c58b8aef17e48643c52197573d9d0a33da509315c65e945db0c85a90d0af2d6b"
 REST_FLOW = ["POST /v1/quotes", "POST /v1/jobs", "GET /v1/jobs/{job_id}"]
 MCP_FLOW = [
     "agentsolve.quotes.create",
@@ -23,20 +23,46 @@ MCP_FLOW = [
     "agentsolve.jobs.get",
 ]
 
+NODES = [
+    "depot", "alpha", "bravo", "charlie", "delta", "echo",
+    "foxtrot", "golf", "hotel", "india", "juliet", "kilo",
+]
+
+# Symmetric distances; row and column order follow NODES.
+DISTANCE_ROWS = [
+    [ 0,  7,  9,  9, 11, 10,  9,  8,  9,  9,  5,  3],
+    [ 7,  0,  7, 11, 16, 17, 16, 13,  9,  5, 11,  6],
+    [ 9,  7,  0,  6, 12, 16, 18, 17, 15, 12,  9, 10],
+    [ 9, 11,  6,  0,  6, 11, 16, 17, 17, 16,  6, 12],
+    [11, 16, 12,  6,  0,  6, 13, 17, 19, 19,  6, 13],
+    [10, 17, 16, 11,  6,  0,  8, 13, 17, 18,  6, 12],
+    [ 9, 16, 18, 16, 13,  8,  0,  6, 12, 15,  9, 10],
+    [ 8, 13, 17, 17, 17, 13,  6,  0,  6, 10, 11,  7],
+    [ 9,  9, 15, 17, 19, 17, 12,  6,  0,  5, 13,  6],
+    [ 9,  5, 12, 16, 19, 18, 15, 10,  5,  0, 13,  6],
+    [ 5, 11,  9,  6,  6,  6,  9, 11, 13, 13,  0,  8],
+    [ 3,  6, 10, 12, 13, 12, 10,  7,  6,  6,  8,  0],
+]
+
 PAYLOAD = {
-    "nodes": ["depot", "alpha", "bravo", "charlie"],
+    "nodes": NODES,
     "start_node": "depot",
     "distances": {
-        "depot": {"alpha": 4, "bravo": 6, "charlie": 8},
-        "alpha": {"depot": 4, "bravo": 3, "charlie": 7},
-        "bravo": {"depot": 6, "alpha": 3, "charlie": 2},
-        "charlie": {"depot": 8, "alpha": 7, "bravo": 2},
+        origin: {
+            destination: DISTANCE_ROWS[row][column]
+            for column, destination in enumerate(NODES)
+            if destination != origin
+        }
+        for row, origin in enumerate(NODES)
     },
 }
 
 DRY_RESULT = {
-    "route": ["depot", "alpha", "bravo", "charlie", "depot"],
-    "objective_value": 17,
+    "route": [
+        "depot", "kilo", "alpha", "india", "hotel", "golf", "foxtrot",
+        "echo", "delta", "charlie", "bravo", "juliet", "depot",
+    ],
+    "objective_value": 71,
     "solver_status": "OPTIMAL",
 }
 
