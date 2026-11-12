@@ -1,5 +1,7 @@
 # Feedback And Bug Reports
 
+Contents: Before You File · Filing A Feature Request · Filing A Bug Report · Retries And Limits · Statuses
+
 Feature requests and bug reports use the same REST and MCP access as the rest
 of the API ([REST](reference-rest-access.md), [MCP](reference-mcp-access.md)).
 Every submission is screened by an operator before it has any visibility. Votes

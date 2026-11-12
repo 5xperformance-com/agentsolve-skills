@@ -1,5 +1,7 @@
 # Problem Type: Newsvendor
 
+Contents: Customer Phrasing · Formulation Recipe · Deferrals · Result Interpretation · Minimal REST Sketch
+
 Canonical schema versions:
 
 - Input: `3.1.newsvendor.input.v1`
@@ -7,14 +9,24 @@ Canonical schema versions:
 
 Use `3.1.newsvendor` for a single-period inventory or capacity-ordering
 decision with explicit discrete demand. The demand uncertainty must be supplied
-as a discrete distribution, scenario set, or scenario tree. Do not fit a demand
+as a flat list of demand scenarios for each item. Do not fit a demand
 forecast inside the adoption flow.
+
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "how many units should we stock for one sale period" | `3.1.newsvendor` | Explicit independent discrete SKU scenarios. |
+| "inventory policy over the next 12 months" | typed deferral `multi_period_inventory` | One static ordering period only. |
+| "SKUs share one purchasing budget" | typed deferral `capacity_coupled_inventory` | SKU decisions are independent. |
+| "demand is correlated across products" | typed deferral `correlated_inventory` | Scenarios are per SKU. |
 
 ## Formulation Recipe
 
 - Decision: one order quantity or capacity quantity for one sale period.
 - Inputs: order cost, shortage or underage cost, overage or salvage economics,
-  and explicit demand outcomes with probabilities or scenario weights.
+  and explicit demand outcomes, each with a probability; one item's
+  probabilities must sum to 1.
 - Objective direction: minimize expected cost or maximize expected profit.
 - Recompute by summing cost or profit over the explicit demand outcomes.
 - Use LP/MILP only when the caller adds linear coupling constraints that are
@@ -30,6 +42,10 @@ forecast inside the adoption flow.
 |---|---|
 | multi-period inventory policy | code `multi_period_inventory`, nearest_supported_subset `3.1.newsvendor`, roadmap_status `deferred` |
 | required service probability or risk constraint | code `chance_constrained_optimization`, nearest_supported_subset expected-value LP/MILP or newsvendor, roadmap_status `deferred` |
+| SKUs sharing one budget or capacity | code `capacity_coupled_inventory`, nearest_supported_subset independent SKU decisions, roadmap_status `deferred` |
+| demand correlated across SKUs | code `correlated_inventory`, nearest_supported_subset independent per-SKU scenarios, roadmap_status `deferred` |
+| an ambiguity set in place of one demand distribution | code `distributionally_robust_inventory`, nearest_supported_subset an explicit discrete demand distribution, roadmap_status `deferred` |
+| a rolling reorder policy | code `rolling_inventory_policy`, nearest_supported_subset one static order decision, roadmap_status `deferred` |
 
 Correlated multi-SKU portfolios, censored sales history, tiny scenario samples,
 and capacity-coupled SKUs require explicit modelling discussion before payload
@@ -41,9 +57,13 @@ The output cites `3.1.newsvendor.output.v2` and reports the selected quantity
 with expected cost or expected profit. For the single-SKU unconstrained case,
 the critical fractile is the useful sanity check: order up to the demand
 quantile implied by underage cost divided by underage plus overage cost. The
-verifier recomputes the expected objective over the explicit scenarios and,
-inside the published enumeration work cap, independently proves grid optimality
-with an exact rational certificate.
+verifier recomputes the expected objective over the explicit scenarios. When
+`order_grid_work` (order-grid points times scenarios, summed over SKUs) is at
+most 1,000,000, it also enumerates the order grid exactly: a result that
+matches the optimum gets an exact rational certificate, and a result that
+claims `OPTIMAL` but falls short is unverified and refunded. Above that cap,
+or when the exact enumeration runs out of its own budget, a result is
+certified valid, not optimal.
 
 ## Minimal REST Sketch
 
@@ -53,30 +73,29 @@ with an exact rational certificate.
   "problem_type": "3.1.newsvendor",
   "problem_schema_version": "3.1.newsvendor.input.v1",
   "input": {
-    "unit_cost": 5,
-    "unit_price": 9,
-    "salvage_value": 2,
-    "demand_distribution": [
-      {"demand": 10, "probability": 0.25},
-      {"demand": 20, "probability": 0.50},
-      {"demand": 30, "probability": 0.25}
+    "id": "newsvendor-small-001",
+    "objective": "max_expected_profit",
+    "items": [
+      {
+        "sku_id": "sku_1",
+        "unit_cost": 5,
+        "selling_price": 9,
+        "salvage_value": 2,
+        "max_order_qty": 40,
+        "demand_scenarios": [
+          {"demand_qty": 10, "probability": 0.25},
+          {"demand_qty": 20, "probability": 0.50},
+          {"demand_qty": 30, "probability": 0.25}
+        ]
+      }
     ]
-  }
+  },
+  "policy": {"max_price_usdc": "0.50"}
 }
 ```
 
-## Minimal MCP Sketch
-
-```json
-{
-  "name": "agentsolve.quotes.create",
-  "arguments": {
-    "idempotency_key": "quote-newsvendor-001",
-    "problem_type": "3.1.newsvendor",
-    "problem_schema_version": "3.1.newsvendor.input.v1"
-  }
-}
-```
+Over MCP, pass the same object as the `arguments` of
+`agentsolve.quotes.create`.
 
 Common pitfalls: using sales history as uncensored demand, omitting scenario
 probabilities, turning a planning horizon into a single-period model without

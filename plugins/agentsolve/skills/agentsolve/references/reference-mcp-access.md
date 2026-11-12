@@ -1,18 +1,81 @@
 # MCP Access
 
-MCP is a thin access layer over the same canonical quote -> job -> poll
-contract as REST. Tools return quickly and do not wait for compute completion.
+Contents: First Job Step By Step · Lifecycle Setup · Polling-First Behavior · Error Envelope
 
-Identity discovery and bootstrap are the same HTTP operations used by REST:
-read `/.well-known/oauth-protected-resource` and `/auth.md`, then call
-`POST /v1/identity/bootstrap` with the managed-provider bearer. MCP deliberately
-has no duplicate registration or bootstrap tool. Unclaimed payment by x402, the
-jurisdiction policy (US and UK only), and the current-policy-version check at
-registration are the same as over REST.
+MCP is a thin access layer over the same canonical quote -> job -> poll
+contract as REST. Each tool takes the REST request body as its `arguments`
+and returns the REST response. Tools return quickly and do not wait for
+compute completion. The class reference supplies the `input`; nothing else
+needs opening on the way to a first result.
+
+## First Job Step By Step
+
+1. **Identity.** A connected, signed-in client skips this. Otherwise identity
+   is the same HTTP operations REST uses: read
+   `/.well-known/oauth-protected-resource` and `/auth.md`, then call
+   `POST /v1/identity/bootstrap` with the managed-provider bearer
+   ([reference-rest-access.md](reference-rest-access.md), step 1). MCP
+   deliberately has no duplicate registration or bootstrap tool. Unclaimed
+   payment by x402, the jurisdiction policy (US and UK only), and the
+   current-policy-version check at registration are the same as over REST.
+
+2. **Quote.** `agentsolve.quotes.create`, with the class reference's request
+   as `arguments`: `idempotency_key`, `problem_type`,
+   `problem_schema_version`, `input` and a `policy` (`max_price_usdc` at the
+   least). Optional: `constraints` (`time_budget_ms`, at most 600000, and
+   `solver_hints`) and `requested_ttl_seconds`. Nothing is charged. Keep
+   `quote_token`, `candidates[]` (each with
+   its `solver_admission_id`, engine name `solver_slot` and `price_locked_usdc`),
+   `default_candidate_solver_admission_id`, `effective_solver_hints` and
+   `payment_requirement.options[]`.
+
+3. **Job.** `agentsolve.jobs.create`:
+
+   ```json
+   {"idempotency_key": "...", "quote_token": "...",
+    "selected_algorithms": ["<solver_admission_id>"],
+    "payment": {"rail": "account_credit",
+                "payment_authority_id": "<pauth_... from the quote>"}}
+   ```
+
+   Routing has no default: send `selected_algorithms` (one id, or 2 to 10
+   for a portfolio) or `auto_route: true`, never both. `payment` satisfies
+   exactly one available option of the quote's `payment_requirement`. A
+   claimed account with credit sends the authority id that the quote's
+   `account_credit` option names in `instructions.payment_object`; when
+   that option is unavailable, follow its `funding_guidance`
+   ([reference-payment-rails.md](reference-payment-rails.md)). A newly
+   registered agent pays by x402
+   ([reference-payment-x402.md](reference-payment-x402.md)). If the quote's
+   `effective_solver_hints` is not null (you sent `constraints`), send it
+   verbatim as `solver_hints`.
+
+   For a consumer the job also carries `consumer_start_acknowledgement`,
+   set to the current terms version. Send it only after the consumer has
+   expressly asked for the job to start at once and accepted that the right
+   to cancel ends when the job is fully performed; permission to pay is not
+   that consent. Without it the job is refused before payment as
+   `INVALID_PAYLOAD` with `express_consumer_request_required`, and
+   `details.extra.terms_version` names the version.
+
+4. **Poll.** `agentsolve.jobs.get` with `{"job_id": "..."}`, waiting
+   `recommended_poll_after_ms` between calls, until `terminal` is `true`.
+
+5. **Read the result.** The terminal `agentsolve.jobs.get` result of a
+   `SETTLED` job carries the answer inline in `output` and the receipt in
+   `routing_receipt`; no other tool is needed. On the receipt read
+   `established_guarantee` (`global_optimality`, `validity`,
+   `infeasibility` or `unverified`), `attestation.claims` (a list of
+   `{kind, source, payload}`; kind `solver_proved` is the engine's own
+   proof, not the verifier's), `terminated_reason`
+   (`completed_before_budget` or `budget_exhausted`), `price_locked_usdc`
+   and `receipt_id`. A `REFUNDED` job explains itself in
+   `terminal_diagnostic`
+   ([reference-errors-and-retries.md](reference-errors-and-retries.md)).
 
 ## Lifecycle Setup
 
-Stage 0 uses Streamable HTTP at `/mcp` with JSON-RPC POST requests. External MCP
+AgentSolve uses Streamable HTTP at `/mcp` with JSON-RPC POST requests. External MCP
 clients should perform authenticated `initialize`, send
 `notifications/initialized`, then use `tools/list` and `tools/call`; `ping`
 is answered for liveness.
@@ -24,62 +87,6 @@ job polling for product state. Official Streamable HTTP clients should send
 `Accept: application/json, text/event-stream`; the server remains tolerant of
 older client headers.
 
-## Tool Inventory
-
-- `agentsolve.problems.list`
-- `agentsolve.problems.get`
-- `agentsolve.solvers.list`
-- `agentsolve.schemas.get`
-- `agentsolve.menus.get`
-- `agentsolve.payments.capabilities`
-- `agentsolve.payments.stripe_payment_intents.create`
-- `agentsolve.payments.account_credit_topups.create`
-- `agentsolve.payments.funding_links.create`
-- `agentsolve.payments.account_credit_balance.get`
-- `agentsolve.payments.authorities.create`
-- `agentsolve.payments.authorities.list`
-- `agentsolve.payments.authorities.revoke`
-- `agentsolve.payments.faucet_programs.list`
-- `agentsolve.quotes.create`
-- `agentsolve.jobs.create`
-- `agentsolve.jobs.get`
-- `agentsolve.jobs.list`
-- `agentsolve.jobs.cancel`
-- `agentsolve.disputes.create`
-- `agentsolve.jobs.reexecute`
-- `agentsolve.uploads.create_handle`
-- `agentsolve.billing.summary`
-- `agentsolve.transparency.changes`
-- `agentsolve.transparency.job`
-- `agentsolve.feature_requests.list`
-- `agentsolve.feature_requests.get`
-- `agentsolve.feature_requests.list_mine`
-- `agentsolve.feature_requests.get_mine`
-- `agentsolve.feature_requests.create`
-- `agentsolve.feature_requests.vote`
-- `agentsolve.feature_requests.unvote`
-- `agentsolve.bug_reports.create`
-- `agentsolve.bug_reports.list`
-- `agentsolve.bug_reports.get`
-
-Engine names are readable before buying: `agentsolve.solvers.list` is the
-solver-catalog read path (there is no `GET /v1/solvers` REST route), and
-every quote candidate carries `solver_slot` and `solver_version`.
-
-The feedback tools mirror the REST feature-request and bug-report operations
-and spend the same request allowances. `agentsolve.feature_requests.create`
-and `agentsolve.bug_reports.create` submit for operator screening. The new item
-is private and visible to you through `agentsolve.feature_requests.list_mine`,
-`agentsolve.feature_requests.get_mine` or the bug-report reads. A feature
-request stays private until an operator publishes it, and bug reports stay
-private in every status. `agentsolve.feature_requests.list` and
-`agentsolve.feature_requests.get` return only published requests even though
-the call is authenticated; search with `list` before filing. Never put
-secrets, payloads or personal data in a title or body. Every call to a feedback
-tool, including an invalid or refused one, spends its kind's request allowance.
-The lifecycle, statuses and limits are in
-[feedback and bug reports](reference-feedback-and-bug-reports.md).
-
 ## Polling-First Behavior
 
 `agentsolve.jobs.create` returns `job_id`, `status`, `terminal`,
@@ -89,43 +96,10 @@ one tool call.
 
 ## Error Envelope
 
-MCP JSON-RPC failures place the stable V5 typed error envelope under
+MCP JSON-RPC failures place the stable typed error envelope under
 `error.data.agentsolve_error`. Read `code`, `message`, `retryable`,
 `idempotency_relevant`, and redacted `details`.
 
-## Idempotency
-
-Creation tools expose caller-generated idempotency keys for quotes, jobs,
-Stripe PaymentIntent preflight, disputes, reexecution, feature requests, and bug
-reports. Use a stable key for retrying the same operation and a new key for a
-materially different payload.
-
-## Scopes
-
-Read-only discovery, schemas, menus, job polling, transparency, and the
-feature-request and bug-report reads use `read`.
-Quote creation uses `quote:create`. Upload-handle tools are disabled outside
-local development and are not part of the current public workflow.
-Job creation and quote-bound Stripe PaymentIntent preflight use `job:create`.
-Cancellation, disputes, reexecution, feature-request and bug-report
-submission, and feature-request voting use `job:write`.
-
-Billing summary, account-credit balance, payment-authority list, and
-faucet-program list operations require `billing:read`. Account-credit top-ups (refused for a consumer owner with
-`consumer_acknowledgement_required`; mint a funding link instead), funding-link minting
-(`agentsolve.payments.funding_links.create` mints a signed funding-link URL a
-human opens to buy account credit), and payment-authority create/revoke
-operations require `billing:write`. The `mcp:*` wildcard is not a billing
-wildcard and does not grant account-credit or payment-authority access by
-itself.
-
-Every static tool descriptor publishes its requirement as
-`x-agentsolve-required-scope`; runtime `tools/list` still filters the catalog
-to scopes held by the caller.
-
-Solver hints are backend-neutral execution modifiers. Use only published fields
-— `time_limit_seconds`, `mip_gap_relative`, `mip_gap_absolute`, `threads`,
-and `random_seed` — when discovery says the class supports them. Hints bind
-at quote time: send them under the quote's `constraints`, then resubmit the
-quote's returned `effective_solver_hints` verbatim as the job's
-`solver_hints`; any divergence is rejected with `QUOTE_HINTS_MISMATCH`.
+A connected client already lists its tools. The full tool list, scopes,
+idempotency rules and solver hints are in
+[reference-mcp-tools.md](reference-mcp-tools.md).

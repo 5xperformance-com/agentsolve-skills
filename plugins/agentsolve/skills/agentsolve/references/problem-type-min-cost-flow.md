@@ -1,5 +1,7 @@
 # Problem Type: Minimum-Cost Flow
 
+Contents: Customer Phrasing · Formulation Recipe · Units and Integers · Deferrals · Result Interpretation · Minimal REST Sketch
+
 Canonical schema versions:
 
 - Input: `6.1.min_cost_flow.input.v1`
@@ -10,7 +12,20 @@ from nodes that supply it to nodes that demand it, every arc has a capacity
 and a per-unit cost, and the goal is the cheapest way to meet every supply and
 demand in full: plants to customers through depots, goods through a
 transshipment network, a transportation problem with contractual minimum
-shipments. Quantities and costs are integers; the answer is exact.
+shipments. Quantities and costs are integers and the arithmetic is exact. The
+optimum is certified when the engine returns node potentials; a flow alone is
+certified valid.
+
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "ship goods from plants to customers through depots at least cost" | `6.1.min_cost_flow` | Supplies positive, demands negative, sum zero; costs per unit in declared fixed-precision units. |
+| "transportation or transshipment problem" | `6.1.min_cost_flow` | Supplies positive, demands negative, sum zero; costs per unit in declared fixed-precision units. |
+| "a depot can handle at most X units" | `6.1.min_cost_flow` | Split the node: in-node → out-node arc with `upper` X. |
+| "several products share the same trucks or pipes" | `2.1.lp` | Multi-commodity flow is a linear program over per-commodity arc variables. |
+| "a route costs a fixed amount to open" | `2.2.milp` | Binary open decisions make it MILP. |
+| "deliver as much as possible when supply falls short" | typed deferral `flow_supply_demand_imbalance` | Add a shortfall sink with the missing demand and a penalty cost, then the supplies balance. |
 
 ## Formulation Recipe
 
@@ -28,8 +43,9 @@ shipments. Quantities and costs are integers; the answer is exact.
   the node enter the in-node; arcs that left it leave the out-node.
 - Minimum shipments: set `lower` on the arc. A contract that guarantees a
   route at least 10 units is `"lower": 10`.
-- Complexity tier: arc count selects the catalog band — `S` up to 500 arcs,
-  `M` 501–5,000, `L` above 5,000.
+- Size tier (the quote's `complexity_tier`): arc count selects it — `S` up to
+  500 arcs, `M` 501–5,000, `L` 5,001–150,000; a network has at most 100,000
+  nodes.
 
 ## Units and Integers
 
@@ -58,8 +74,8 @@ commodities sharing arcs are a linear program over per-commodity arc
 variables (`2.1.lp`), and a fixed charge for using a route needs a binary
 decision (`2.2.milp`).
 
-Provider-native payloads fall under deferral code
-`provider_native_payload_required`; submit the canonical schema instead.
+A solver-native payload is refused as `INVALID_PAYLOAD`; submit the canonical
+schema instead.
 
 ## Result Interpretation
 
@@ -108,22 +124,13 @@ the objective recomputed from the flows.
       {"id": "plant_shop", "from": "plant", "to": "shop", "lower": 2, "upper": 4, "cost": 5}
     ],
     "units": {"quantity_decimals": 0, "cost_decimals": 0}
-  }
+  },
+  "policy": {"max_price_usdc": "0.50"}
 }
 ```
 
-## Minimal MCP Sketch
-
-```json
-{
-  "name": "agentsolve.quotes.create",
-  "arguments": {
-    "idempotency_key": "quote-min-cost-flow-001",
-    "problem_type": "6.1.min_cost_flow",
-    "problem_schema_version": "6.1.min_cost_flow.input.v1"
-  }
-}
-```
+Over MCP, pass the same object as the `arguments` of
+`agentsolve.quotes.create`.
 
 See [formulation-patterns.md](formulation-patterns.md),
 [infeasibility-diagnostics.md](infeasibility-diagnostics.md), and

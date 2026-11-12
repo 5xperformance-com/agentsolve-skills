@@ -1,7 +1,7 @@
 # Formulation Patterns
 
-Use these patterns only when they emit an ordinary supported Stage 0 LP, MILP,
-CVRP, or RCPSP payload. If a required semantic does not fit, use typed deferral
+Use these patterns only when they emit an ordinary supported LP, MILP, CVRP,
+or RCPSP payload. If a required semantic does not fit, use typed deferral
 before quote creation.
 
 ## LP And MILP Patterns
@@ -34,10 +34,11 @@ before quote creation.
   resource capacity.
 - hard windows: propagate arrival, service start, and service completion using
   a single time base.
-- RCPSP horizon: derive a finite horizon from durations, calendars, and windows
-  rather than using a casual oversized value.
+- RCPSP horizon: the input has no horizon field, and a `horizon` key is
+  refused. The platform derives the horizon from durations, lags, calendars,
+  and windows.
 
 Weighted-sum single-objective LP/MILP reformulation,
 lexicographic staged single-objective LP/MILP solve, and
 threshold-plus-objective single-objective LP/MILP formulation are
-allowed only when each solve remains an ordinary single-objective Stage 0 job.
+allowed only when each solve remains an ordinary single-objective job.

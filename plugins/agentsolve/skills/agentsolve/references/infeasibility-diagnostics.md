@@ -3,17 +3,12 @@
 Use this reference when a quote, job, result, or receipt reports an infeasible,
 unbounded, time-limited, or warning-bearing outcome.
 
-## Closed Labels
+## Label
 
-`infeasibility_diagnostic.label` uses these closed agent-facing labels:
-
-- `formal_iis`: a formal irreducible infeasible subsystem style explanation.
-- `conflict_candidate`: a bounded conflict explanation when a formal proof is
-  not available.
-- `semantic_diagnostic`: a domain or verifier explanation such as missing
-  capacity, impossible activity windows, or invalid candidate schedule.
-- `routing_infeasibility_certificate`: routing-specific capacity, timing,
-  coverage, or route-duration impossibility.
+One label is in use: `semantic_diagnostic`, set when the verifier rejects a
+result. It is the value of `infeasibility_diagnostic.label`, and
+`infeasibility_diagnostic.summary` carries the verifier's reason. A result the
+verifier accepts carries no diagnostic.
 
 ## Handling
 

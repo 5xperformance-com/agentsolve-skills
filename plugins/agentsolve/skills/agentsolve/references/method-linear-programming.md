@@ -1,15 +1,16 @@
 # Method: Linear Programming
 
-Use this when the user describes continuous allocation, blending, production,
-transportation, assignment, transshipment, or other linear resource allocation.
-For payload details, see [problem-type-lp.md](problem-type-lp.md).
+Use this when the user describes continuous allocation, blending or
+production. Assignment goes to `5.1.assignment` and single-commodity network
+flow to `6.1.min_cost_flow`. For payload details, see
+[problem-type-lp.md](problem-type-lp.md).
 
 ## Math Contract
 
-Stage 0 LP has continuous variables only, a single linear objective, and linear
+LP has continuous variables only, a single linear objective, and linear
 constraints. Result confidence comes from primal feasibility, objective
-recomputation, dual feasibility where populated, and strong-duality checks where
-available.
+recomputation, dual feasibility, and a strong-duality check, all within the
+declared tolerance; a result without dual values is not accepted.
 
 ## Sensitivity
 
@@ -20,11 +21,11 @@ near-duplicate constraints before retry.
 
 ## Special Structure
 
-Transportation, assignment, network-flow, and transshipment patterns can often
-stay LP. Do not escalate to MILP when the accepted linear structure already
-gives integer-valued optima through its network form. Escalate to
-`2.2.milp` only when the user needs actual integer, binary, fixed-charge, or
-either-or decisions.
+A linear model with network structure that the dedicated classes do not fit,
+such as several commodities sharing arcs, stays LP. Do not escalate to MILP
+when the accepted linear structure already gives integer-valued optima through
+its network form. Escalate to `2.2.milp` only when the user needs actual
+integer, binary, fixed-charge, or either-or decisions.
 
-If a required feature is outside linear Stage 0, use the typed deferral codes in
-[problem-type-lp.md](problem-type-lp.md).
+If a required feature is outside the linear class, follow the out-of-scope
+guidance in [problem-type-lp.md](problem-type-lp.md).

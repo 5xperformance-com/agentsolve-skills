@@ -1,7 +1,11 @@
 # Errors And Retries
 
-All agent-facing failures use the stable V5 error envelope with `code`,
-`message`, `retryable`, `idempotency_relevant`, and redacted `details`.
+Contents: Error Code Inventory · Job Status → Diagnostic → Recovery · Observed Rate-Limit and Replay Shapes
+
+Agent-facing failures use one envelope: `{"request_id": …, "error": {…}}`,
+where `error` carries `code`, `message`, `retryable`, `idempotency_relevant`,
+and redacted `details`. A typed deferral sits in
+`error.details.extra.typed_deferral`.
 
 ## Error Code Inventory
 
@@ -14,7 +18,7 @@ All agent-facing failures use the stable V5 error envelope with `code`,
 | `INTERNAL_ERROR` | Retry only when `retryable=true`; preserve idempotency key. |
 | `QUOTE_EXPIRED` | Create a fresh quote. |
 | `PAYMENT_REQUIRED` | A job request carries no payment for a quote that needs one; read `details.extra.payment_requirement` for the available funding options and resubmit the job with one of them. |
-| `PAYMENT_AUTH_FAILED` | Correct the funding path or ask the caller to reauthorize; when `details.extra.retry_after_seconds` is present (velocity windows span hours), wait that long rather than retrying on minutes-scale backoff. `settlement_outcome: settled` with `remedy: x402_credit_fallback` means the x402 payment settled and was credited to the account: resubmit the same job request (same quote, same idempotency key) paying from account credit with `details.extra.remedy_payment_authority_id` (also listed by `GET /v1/payments/authorities`), never by replaying the same payment. A fresh x402 signature needs a fresh quote, which an autonomous account can take only after this one expires. |
+| `PAYMENT_AUTH_FAILED` | Correct the funding path or ask the caller to reauthorize; when `details.extra.retry_after_seconds` is present (velocity windows span hours), wait that long rather than retrying on minutes-scale backoff. `settlement_outcome: settled` with `remedy: x402_credit_fallback` means the x402 payment settled: follow the [post-settlement recovery](reference-payment-x402.md#if-job-creation-is-refused-after-settlement), which distinguishes spendable credit from a consumer's pending USDC refund. Never replay the signed payment. |
 | `JOB_NOT_FOUND` | Check account scope and the resource id. |
 | `IDEMPOTENCY_CONFLICT` | Do not reuse the key for different material inputs. |
 | `QUOTE_HINTS_MISMATCH` | Pass the quote's `effective_solver_hints` verbatim on the job, or create a new quote. |
@@ -26,10 +30,10 @@ All agent-facing failures use the stable V5 error envelope with `code`,
 | `SELECTED_ALGORITHM_NOT_IN_QUOTE` | Select only solver admission ids the quote offered. |
 | `COHORT_SIZE_EXCEEDED` | Portfolio jobs take at most 10 solver admission ids, and at most the number this capacity can start within the first-dispatch bound at the quoted budget: the quote's `PORTFOLIO_LIMITED_BY_CAPACITY` warning states it and the refusal's `details.extra.max_cohort_size_at_budget` repeats it. Not retryable: select fewer solvers. |
 | `COHORT_HEAD_REQUIRED` | Cancel a portfolio only through its cohort head job; the response names the head job's ID. |
-| `UNSUPPORTED_FAILOVER_MODE` | Set `policy.failover_mode` to `strict`; Stage 0 does not implement any other failover posture. |
+| `UNSUPPORTED_FAILOVER_MODE` | Set `policy.failover_mode` to `strict`; no other failover posture is available. |
 | `MODE_3_NO_ELIGIBLE_CANDIDATE` | Relax the policy or select a solver explicitly. |
 | `CONCURRENT_QUOTE_CONSUMPTION` | Poll or retry with the same idempotency key. |
-| `AUTHENTICATION_REQUIRED` | Refresh credentials. |
+| `AUTHENTICATION_REQUIRED` | Three cases. A lapsed bearer: exchange the assertion again and repeat the same bootstrap. A 401 that says `active identity credential required`: the new bearer has not been bootstrapped yet; repeat the bootstrap. A 403 naming `required_scopes`: the credential lacks that scope; `billing:write` comes only with a claim. |
 | `IDENTITY_BOOTSTRAP_CONFLICT` | The identity was already bootstrapped; reuse the stored credential. |
 | `ORIGIN_NOT_ALLOWED` | Use an allowed MCP or REST origin. |
 | `RATE_LIMITED` | Back off according to server guidance. `tools/submit.py` retries these itself with bounded backoff. |
@@ -45,14 +49,17 @@ A terminal job or cohort member carries its own explanation:
 | Status | Where to look | Recovery |
 |---|---|---|
 | `SETTLED` | `output_url`, `routing_receipt` | None needed — the receipt is the deliverable. |
-| `REFUNDED` | `terminal_diagnostic` (`code`, `fault_class`, `refund_disposition`) | Platform fault (`fault_class: "platform"`): re-submit; you were not charged. Input fault: fix the named field first. |
+| `REFUNDED` | `terminal_diagnostic` (`code`, `fault_class`, `refund_disposition`) | Platform fault (`fault_class: "platform"`): re-submit; the job cost nothing. Input fault: fix the named field first. |
 | `DISPUTED` / `SUPERSEDED` | `terminal_diagnostic` | Read the diagnostic; these are not retry targets. |
 
 ### `terminal_diagnostic.failure_code` on a refunded job
 
 `retryable` answers "is resubmitting the same request worth it", not "will the
 platform retry". A solver-owned code is not retryable: the same request reaches
-the same solver and the same outcome. You are never charged for a refunded job.
+the same solver and the same outcome. A refunded job costs nothing: a card
+or credit charge is released, and an x402 payment, which settles before the
+job runs, comes back as account credit or USDC
+([paying by x402](reference-payment-x402.md)).
 
 | Code | Meaning | Recovery |
 |---|---|---|
@@ -69,6 +76,13 @@ the same solver and the same outcome. You are never charged for a refunded job.
 
 ## Observed Rate-Limit and Replay Shapes
 
+- **HTTP 429 `RATE_LIMITED`** on quote creation, with a message that begins
+  `autonomous account already has a live unpaid quote`: an unclaimed agent
+  holds one unpaid quote at a time. Do not retry on a short backoff: pay the
+  live quote, or wait for it to expire. A quote lasts 24 hours unless
+  `requested_ttl_seconds` asked for less. Where the refusal carries
+  `Retry-After` and `details.extra.live_quote_expires_at`, they give the
+  wait and `details.extra.live_quote_id` names the quote.
 - **HTTP 429 `RATE_LIMITED`** on job creation with
   `details.rejection_reason == "execution queue at capacity"`: the execution
   slots cannot start this work within the 15-minute first-dispatch bound.
@@ -80,14 +94,11 @@ the same solver and the same outcome. You are never charged for a refunded job.
   `Retry-After`, then retry the identical request with the same idempotency
   key; `tools/submit.py` does this automatically (bounded attempts with
   jitter). When it is `true` (`retryable: false`: an x402 payment that
-  settled in the moment between the pre-payment check and the final one)
-  the settled amount is credited to the account: wait `Retry-After`, then
-  resubmit the same job request (same quote, same idempotency key) paying
-  from account credit with `details.extra.remedy_payment_authority_id`
-  (also listed by `GET /v1/payments/authorities`). Replaying the same signed payment is
-  refused with 402 `PAYMENT_AUTH_FAILED`, and a fresh x402 signature needs a
-  fresh quote, which an autonomous account can take only after this one
-  expires. Prefer the tool's own multi-document batching
+  settled in the moment between the pre-payment check and the final one),
+  follow the [post-settlement recovery](reference-payment-x402.md#if-job-creation-is-refused-after-settlement):
+  wait `Retry-After` before retrying from spendable remedy credit; a
+  consumer's pending USDC refund cannot fund the retry. Prefer the tool's
+  own multi-document batching
   (`submit.py A.json B.json C.json`) over launching parallel processes — a
   burst of concurrent submissions is what trips the queue limit.
 - **HTTP 429 `RATE_LIMITED` with `details.extra.bucket ==
@@ -98,12 +109,10 @@ the same solver and the same outcome. You are never charged for a refunded job.
   `details.extra.retry_after_seconds` and retry the identical job request
   with the same idempotency key; pace a batch of more than 30 problems
   across hours rather than retrying in a loop. When it is `true` (an x402
-  payment that settled before the refusal) the settled amount is credited to
-  the account: after `details.extra.retry_after_seconds`, resubmit the same
-  job request (same quote, same idempotency key) paying from account credit
-  with `details.extra.remedy_payment_authority_id` (also listed by
-  `GET /v1/payments/authorities`); a fresh x402 signature needs a fresh
-  quote, which an autonomous account can take only after this one expires.
+  payment that settled before the refusal), follow the
+  [post-settlement recovery](reference-payment-x402.md#if-job-creation-is-refused-after-settlement):
+  wait `details.extra.retry_after_seconds` before retrying from spendable
+  remedy credit; a consumer's pending USDC refund cannot fund the retry.
 - **HTTP 409 after a 429**: if a byte-identical retry answers 409, do not
   invent a new idempotency key to get around it — report the error
   envelope verbatim; the pairing is a platform defect, not an input

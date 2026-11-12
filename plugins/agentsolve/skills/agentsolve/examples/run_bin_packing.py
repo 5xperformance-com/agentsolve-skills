@@ -86,6 +86,9 @@ def quote_body() -> dict[str, object]:
         "problem_type": PROBLEM_TYPE,
         "problem_schema_version": INPUT_SCHEMA_VERSION,
         "input": PAYLOAD,
+        # An unpaid quote blocks an unclaimed account's next quote until it
+        # expires, so ask for a short one.
+        "requested_ttl_seconds": 900,
         "policy": {
             "max_price_usdc": "1.00",
             "exploration_mode": "none",
@@ -108,29 +111,36 @@ def job_body(base: str, quote: dict[str, object]) -> dict[str, object]:
     requirement = quote.get("payment_requirement")
     if isinstance(requirement, dict) and requirement.get("requires_payment") is False:
         return body
-    trial_code = os.environ.get("AGENTSOLVE_TRIAL_CREDIT_CODE")
-    if trial_code:
-        body["payment"] = {"rail": "trial_credit", "trial_credit_code": trial_code}
-    else:
-        intent = request_json(
-            "POST",
-            f"{base}/v1/payments/stripe/payment-intents",
-            {
-                "quote_token": quote["quote_token"],
-                "job_idempotency_key": f"{EXAMPLE_ID}-job",
-                "idempotency_key": f"{EXAMPLE_ID}-pi",
-            },
+    trial_credit_code = os.environ.get("AGENTSOLVE_TRIAL_CREDIT_CODE")
+    if not trial_credit_code:
+        # The example signs nothing and confirms no card, so it stops here
+        # rather than submit a payment the API would refuse.
+        options = (
+            requirement.get("options")
+            if isinstance(requirement, dict)
+            else None
         )
-        body["payment"] = {
-            "rail": "stripe",
-            "payment_intent_id": intent["payment_intent_id"],
-        }
+        available = sorted(
+            str(option.get("rail"))
+            for option in options or []
+            if isinstance(option, dict) and option.get("available")
+        )
+        raise SystemExit(
+            "this example pays only with trial credit (set "
+            "AGENTSOLVE_TRIAL_CREDIT_CODE), and this quote offers "
+            f"{available or 'no rail it can use'}. To pay by x402, account "
+            "credit or a confirmed card intent, submit the same problem with "
+            "tools/submit.py, which hands an x402 payment to your wallet. Run "
+            "this example with --dry-run to see the request and result shapes."
+        )
+    body["payment"] = {"rail": "trial_credit", "trial_credit_code": trial_credit_code}
     return body
 
 
 def dry_run() -> dict[str, object]:
     return {
         "mode": "dry_run",
+        "example_id": EXAMPLE_ID,
         "problem_type": PROBLEM_TYPE,
         "problem_schema_version": INPUT_SCHEMA_VERSION,
         "output_schema_version": OUTPUT_SCHEMA_VERSION,
@@ -157,7 +167,7 @@ def live_run(base_url: str) -> dict[str, object]:
             break
         time.sleep(max(int(observed.get("recommended_poll_after_ms") or 100), 100) / 1000)
         observed = request_json("GET", f"{base}/v1/jobs/{job_id}")
-    return {"mode": "live", "quote": quote, "job": observed}
+    return {"mode": "live", "example_id": EXAMPLE_ID, "quote": quote, "job": observed}
 
 
 def main() -> int:

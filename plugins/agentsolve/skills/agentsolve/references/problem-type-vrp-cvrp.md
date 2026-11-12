@@ -1,28 +1,59 @@
-# Problem Type: CVRP, Fleet Sizing, And VRPTW-Lite
+# Problem Type: CVRP, Fleet Sizing, And Time Windows
+
+Contents: Customer Phrasing · Formulation Recipe · Deferrals And Routing Choices · Output And Self-Checks · Minimal REST Sketch
 
 Canonical schema versions:
 
 - Input: `1.2.vrp.cvrp.input.v4`
 - Output: `1.2.vrp.cvrp.output.v4`
 
-Use `1.2.vrp.cvrp` for one-depot, multiple-vehicle routing with hard
-capacities, customer demand, directed travel costs, optional per-vehicle fixed
-costs (fleet sizing), optional per-customer vehicle eligibility, and the
-launch hard-window subset when service times and travel times are supplied.
+Use `1.2.vrp.cvrp` for capacitated fleet routing from one or more depots,
+with hard capacities, customer demand, directed travel costs, optional
+per-vehicle fixed costs (fleet sizing), optional per-customer vehicle
+eligibility, optional paired pickup and delivery, and optional time windows.
+A hard window needs service times and travel times; a priced one needs
+travel times.
 
 For submission, use [reference-rest-access.md](reference-rest-access.md)
 or [reference-mcp-access.md](reference-mcp-access.md).
 
 Solver availability is discovered through menu, quote, and receipt fields.
 Additional routing families may improve quality or latency after admission, but
-agents should keep emitting the canonical CVRP/VRPTW-lite schema rather than any
+agents should keep emitting the canonical CVRP schema rather than any
 backend-specific model.
+
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "routes for 5 vans with package weights" | `1.2.vrp.cvrp` | Capacitated routing from the primary `depot`; declare further depots in `depots`. |
+| "delivery routes with hard arrival windows and service times" | `1.2.vrp.cvrp` | Declare `time_windows`, `service_times` and static `travel_times`. |
+| "pickup from suppliers then deliver to customers" | `1.2.vrp.cvrp` input v4 | Declare `pickup_delivery_pairs`; both stops ride one vehicle, pickup first, and the paired customers declare `demand: 0`. |
+| "same customer can be served by several trucks" | typed deferral `split_delivery_vrp` | Each customer is served once. |
+| "several depots feed the routes" | `1.2.vrp.cvrp` input v4 | Declare `depots` beside the primary `depot`, and give a vehicle its own `start_depot_id` and `end_depot_id`. |
+| "being late costs money rather than being forbidden" | `1.2.vrp.cvrp` input v4 | Declare `soft_time_windows` with `lateness_penalty_per_unit`; a node takes a hard window or a soft one, never both. |
+| "each driver has their own shift length" | `1.2.vrp.cvrp` input v4 | Declare a per-vehicle `duration_limit`; where a fleet limit also applies, the tighter binds. |
+| "each truck costs money to send out" | `1.2.vrp.cvrp` | Declare per-vehicle `fixed_cost` in distance units; unused vehicles are free. |
+| "only certain trucks may serve this site" | `1.2.vrp.cvrp` | Declare `eligible_vehicles` on the restricted customer. |
+| "vehicle types or driver skills" | typed deferral `heterogeneous_fleet_vrp` | Declare `fixed_cost` and `eligible_vehicles` instead when those capture the need. |
+| "travel time changes during the day" | typed deferral `time_dependent_travel` | Travel data is static. |
 
 ## Formulation Recipe
 
-- Required: `depot`, `vehicle_count`, `vehicle_capacity`, `customers[].demand`,
-  and complete directed `distances`.
-- Optional launch fields: `vehicles[].capacity`, `vehicles[].fixed_cost`, a
+- Required: `id`, `job_intent` (`optimize`), `depot` (an object with an `id`),
+  `vehicle_count`, `vehicle_capacity`, `customers[]` with `id` and `demand`,
+  and complete directed `distances`: an object keyed by node id, each value
+  an object giving the distance to every other node (a node's distance to
+  itself may be left out).
+- Timed routes: `travel_times` has the shape of `distances`. `time_windows`
+  is an object keyed by node id, each value `[start, end]`; `service_times`
+  is an object keyed by node id, each value a duration. With windows,
+  `travel_times` must be complete and `service_times` must name every node,
+  the depot too. A window bounds the start of service: a vehicle that
+  arrives early waits until `start`, and must arrive by `end`. The depot's
+  window is its opening time. `route_duration_limit` is one number, the
+  longest any route may last.
+- Optional fields: `vehicles[].capacity`, `vehicles[].fixed_cost`, a
   default `vehicle_fixed_cost`, `customers[].eligible_vehicles`, hard
   `time_windows`, `service_times`, complete directed `travel_times`, and
   `route_duration_limit`.
@@ -40,10 +71,11 @@ backend-specific model.
 - Eligibility: `eligible_vehicles` is a hard constraint — only the listed
   vehicles may serve that customer. Omit it for customers any vehicle may
   serve.
-- Complexity tier: CVRP customer-count tiers are `S <= 25`, `M <= 75`, and
-  `L` 76-2,499, excluding the depot. The L band is not a capacity or latency
-  guarantee. Inspect vehicle count, matrix and eligibility density, time
-  constraints, pickup-delivery pairs, and depots in the quote descriptor.
+- Size tier (the quote's `complexity_tier`): customer-count tiers are
+  `S <= 25`, `M <= 75`, and `L` 76-2,499, excluding the depot. The L tier is
+  not a capacity or latency guarantee. Inspect vehicle count, matrix and
+  eligibility density, time constraints, pickup-delivery pairs, and depots in
+  the quote descriptor.
 - Size limits: at most 2,500 nodes (depots plus customers, so at most 2,499
   customers), 1,000 vehicles (`vehicle_count` and `vehicles`), 100 additional
   `depots`, 1,249 `pickup_delivery_pairs`, and 1,000 entries per
@@ -53,7 +85,7 @@ backend-specific model.
 
 | Required semantic | Action |
 |---|---|
-| split delivery | code `split_delivery_vrp`, nearest_supported_subset `1.2.vrp.cvrp`, roadmap_status `deferred` |
+| split delivery | code `split_delivery_vrp`, nearest_supported_subset each customer served exactly once, roadmap_status `deferred` |
 | vehicle skills or full fleet types | code `heterogeneous_fleet_vrp`, nearest_supported_subset per-vehicle capacity, fixed cost, and explicit eligibility, roadmap_status `deferred` |
 | time-varying travel | code `time_dependent_travel`, nearest_supported_subset static matrix routing, roadmap_status `deferred` |
 
@@ -70,7 +102,8 @@ schema fields:
 - `soft_time_windows` prices lateness instead of forbidding it: a node declares
   `start`, `end`, and `lateness_penalty_per_unit`, and any service starting
   after `end` adds that price per unit to the objective. A node declares either
-  a hard window or a soft one, never both.
+  a hard window or a soft one, never both. Soft windows, like a per-vehicle
+  `duration_limit`, need `travel_times`.
 
 Per-vehicle fixed costs and explicit eligibility are supported schema fields,
 not deferrals: model a skill requirement as an explicit `eligible_vehicles`
@@ -88,10 +121,9 @@ from `routes[]` was not deployed and incurs no fixed cost.
 Before quote creation, check that total demand does not exceed aggregate
 capacity, every customer's demand fits at least one of its eligible vehicles,
 every customer appears once, the depot is present, all matrix arcs exist, and
-hard windows can be reached under the supplied travel-time matrix.
-`routing_infeasibility_certificate` is the routing diagnostic label for
-capacity, coverage, timing, or duration impossibility; semantic pre-check
-failures are request corrections before retry.
+hard windows can be reached under the supplied travel-time matrix. A request
+that fails one of these checks is refused with `INVALID_PAYLOAD`; correct it
+before retrying.
 
 ## Minimal REST Sketch
 
@@ -101,35 +133,28 @@ failures are request corrections before retry.
   "problem_type": "1.2.vrp.cvrp",
   "problem_schema_version": "1.2.vrp.cvrp.input.v4",
   "input": {
-    "depot": "depot",
+    "id": "cvrp-small-001",
+    "job_intent": "optimize",
+    "depot": {"id": "depot"},
     "vehicle_count": 2,
     "vehicle_capacity": 10,
     "vehicle_fixed_cost": 25,
     "customers": [
       {"id": "c1", "demand": 4},
-      {"id": "c2", "demand": 6, "eligible_vehicles": ["veh_2"]}
+      {"id": "c2", "demand": 6}
     ],
     "distances": {
       "depot": {"depot": 0, "c1": 7, "c2": 9},
       "c1": {"depot": 7, "c1": 0, "c2": 3},
       "c2": {"depot": 9, "c1": 3, "c2": 0}
     }
-  }
+  },
+  "policy": {"max_price_usdc": "0.50"}
 }
 ```
 
-## Minimal MCP Sketch
-
-```json
-{
-  "name": "agentsolve.quotes.create",
-  "arguments": {
-    "idempotency_key": "quote-cvrp-001",
-    "problem_type": "1.2.vrp.cvrp",
-    "problem_schema_version": "1.2.vrp.cvrp.input.v4"
-  }
-}
-```
+Over MCP, pass the same object as the `arguments` of
+`agentsolve.quotes.create`.
 
 Common pitfalls: capacity-overflow routes, missing depot arcs, inconsistent
 time units, impossible hard windows, decimal costs without scaling, fixed

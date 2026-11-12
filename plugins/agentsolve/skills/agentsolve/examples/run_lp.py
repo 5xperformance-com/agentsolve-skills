@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Stage 0 LP quote -> job -> poll example."""
+"""Run the LP quote -> job -> poll example."""
 
 from __future__ import annotations
 
@@ -135,6 +135,9 @@ def quote_body() -> dict[str, object]:
         "problem_type": PROBLEM_TYPE,
         "problem_schema_version": INPUT_SCHEMA_VERSION,
         "input": PAYLOAD,
+        # An unpaid quote blocks an unclaimed account's next quote until it
+        # expires, so ask for a short one.
+        "requested_ttl_seconds": 900,
         "policy": {
             "max_price_usdc": "1.00",
             "exploration_mode": "none",
@@ -161,22 +164,29 @@ def job_body(base: str, quote: dict[str, object]) -> dict[str, object]:
     ):
         return body
 
-    payment: dict[str, object]
     trial_credit_code = os.environ.get("AGENTSOLVE_TRIAL_CREDIT_CODE")
-    if trial_credit_code:
-        payment = {"rail": "trial_credit", "trial_credit_code": trial_credit_code}
-    else:
-        intent = request_json(
-            "POST",
-            f"{base}/v1/payments/stripe/payment-intents",
-            {
-                "quote_token": quote["quote_token"],
-                "job_idempotency_key": f"{EXAMPLE_ID}-job",
-                "idempotency_key": f"{EXAMPLE_ID}-pi",
-            },
+    if not trial_credit_code:
+        # The example signs nothing and confirms no card, so it stops here
+        # rather than submit a payment the API would refuse.
+        options = (
+            payment_requirement.get("options")
+            if isinstance(payment_requirement, dict)
+            else None
         )
-        payment = {"rail": "stripe", "payment_intent_id": intent["payment_intent_id"]}
-    body["payment"] = payment
+        available = sorted(
+            str(option.get("rail"))
+            for option in options or []
+            if isinstance(option, dict) and option.get("available")
+        )
+        raise SystemExit(
+            "this example pays only with trial credit (set "
+            "AGENTSOLVE_TRIAL_CREDIT_CODE), and this quote offers "
+            f"{available or 'no rail it can use'}. To pay by x402, account "
+            "credit or a confirmed card intent, submit the same problem with "
+            "tools/submit.py, which hands an x402 payment to your wallet. Run "
+            "this example with --dry-run to see the request and result shapes."
+        )
+    body["payment"] = {"rail": "trial_credit", "trial_credit_code": trial_credit_code}
     return body
 
 

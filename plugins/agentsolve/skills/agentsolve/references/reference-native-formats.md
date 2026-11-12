@@ -14,7 +14,7 @@ canonical payload directly using the matching problem-type reference.
 | `tsplib` | `.tsp` | `1.1.tsp` | `EDGE_WEIGHT_TYPE` `EUC_2D`, `GEO`, or `EXPLICIT` with `FULL_MATRIX` or `LOWER_DIAG_ROW` |
 | `tsplib` | `.atsp` | `1.1.tsp` | `EXPLICIT` with `FULL_MATRIX` (asymmetric distances preserved) |
 | `cvrplib` | `.vrp` | `1.2.vrp.cvrp` | `EUC_2D` or `EXPLICIT` with `LOWER_ROW`; exactly one depot |
-| `mps` | `.mps`, `.mps.gz` | `2.1.lp` or `2.2.milp` | `NAME`/`ROWS`/`COLUMNS`/`RHS`/`BOUNDS`/`ENDATA`; one objective row; linear `L`/`E`/`G` rows; integer markers; `LI`/`UP` bounds |
+| `mps` | `.mps`, `.mps.gz` | `2.1.lp` or `2.2.milp` | `NAME`/`ROWS`/`COLUMNS`/`RHS`/`BOUNDS`/`ENDATA`; one objective row; linear `L`/`E`/`G` rows; integer markers; `LI`/`UP` bounds only (any other bound type is refused; `LI` also makes its variable integer) |
 | `psplib-sm` | `.sm` | `4.1.scheduling.rcpsp` | single-mode instances whose resources are all renewable |
 | `taillard` | header-sniffed text | `4.2.scheduling.jssp` | standard Taillard job-shop files; pick one instance with `--instance-index` |
 
@@ -60,5 +60,5 @@ requires an already-confirmed PaymentIntent
 (`AGENTSOLVE_STRIPE_PAYMENT_INTENT_ID`); an unconfirmed preflight intent
 stops with an explicit confirmation handoff instead of submitting.
 
-The remaining launch classes have no dominant community interchange format;
+The other classes have no dominant community interchange format;
 write their canonical payloads directly from the problem-type references.

@@ -16,9 +16,9 @@ The two layers use different names and units for the same bound:
 `constraints.time_budget_ms` (milliseconds, quote-side) folds into the
 hint `time_limit_seconds` (seconds, job-side) — the quote does the
 conversion; never hand-build the hint. A larger `time_budget_ms` raises the
-quote price: every second beyond the 120-second included budget is priced at
-the published extended-time rate (0.35 USDC per hour, rounded up to the
-cent) and shown as `price_components.extended_time_allowance_usdc`. The
+quote price: solve time beyond what the class price includes is charged,
+and the quote shows that charge as
+`price_components.extended_time_allowance_usdc`. The
 purchasable budget is capped at ten minutes (600 seconds) at launch
 capacity: a quote asking for more, through `constraints.time_budget_ms`,
 `constraints.solver_hints.time_limit_seconds` or the input's
@@ -27,6 +27,9 @@ capacity: a quote asking for more, through `constraints.time_budget_ms`,
 `details.extra.max_purchasable_solve_budget_seconds` the ceiling; ask for
 at most that. Whether more time is worth buying is a question for the
 receipts, not the price.
+`GET /v1/problems/{problem_type}/menu` lists the current price for every
+class and size without a credential; the quote locks the price before any
+work starts.
 It also returns the exact-input
 `instance_descriptor`, a top-level `estimate_basis`, and candidate
 `evidence_scope_state` values. `catalog_projection` is an estimate, not a
@@ -80,9 +83,8 @@ in `selected_algorithms` for Mode 1, 2 to 10 ids for portfolio mode, or
 `auto_route: true` for the platform's deterministic catalog-default
 selection.
 
-Review-gated payment-overhaul rails are intentionally non-executable in this
-active adoption reference until their payment-evidence contracts are updated and
-activated. If an unavailable option appears in `payment_requirement.options`,
+Review-gated rails cannot be used until AgentSolve activates them. If an
+unavailable option appears in `payment_requirement.options`,
 do not submit it to `POST /v1/jobs`.
 
 Tax and rail fee fields are interpreted through the settled receipt. Trial

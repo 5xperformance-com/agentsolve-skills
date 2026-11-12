@@ -14,11 +14,11 @@ provider-neutral execution supply exposed through menu, quote, policy, and
 receipt fields; do not alter canonical payloads or ask for solver-native input
 syntax.
 
-Stage 0 non-guarantees:
+Non-guarantees:
 
 - no global optimality claim unless exact certification exists
 - no runtime, quality, or capacity guarantee from a complexity-tier label;
-  an open-ended L region is only a catalog price segment
+  a size tier is only a catalog price segment
 - no support claim for every optimization or inference domain
 - no provider-hosted privacy or enclave-backed execution claim
 - no decentralization or governance-by-stake claim

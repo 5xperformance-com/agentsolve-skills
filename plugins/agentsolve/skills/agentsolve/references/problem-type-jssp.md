@@ -1,5 +1,7 @@
 # Problem Type: Job-Shop Scheduling
 
+Contents: Customer Phrasing · Formulation Recipe · Deferrals · Result Interpretation · Time budgets · Job intents · Minimal REST Sketch
+
 Canonical schema versions:
 
 - Input: `4.2.scheduling.jssp.input.v3`
@@ -11,11 +13,23 @@ duration, machines process one operation at a time, and the goal is the
 shortest makespan — or, with per-job release and due dates, the smallest
 total tardiness.
 
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "schedule jobs through machines in a fixed operation order" | `4.2.scheduling.jssp` | Fixed machine and order per operation. |
+| "minimize total lateness against job due dates" | `4.2.scheduling.jssp` with `objectives.primary=minimize_total_tardiness` | Per-job due dates and optional release days. |
+| "any qualified machine can do this operation" | `4.2.scheduling.jssp` input v3 | Declare per-operation `machine_options` with the duration on each machine; the result names the machine each operation ran on. |
+| "late orders differ in how much they cost us" | `4.2.scheduling.jssp` input v3 with `objectives.primary=minimize_total_tardiness` | Declare a per-job `weight`; the payload is rejected when the weighted objective could leave exact integer range. |
+| "changeover time depends on what ran before" | typed deferral `jssp_sequence_dependent_setup` | Sequence-dependent setup is not modelled. |
+
 ## Formulation Recipe
 
 - `machines`: unique machine identifiers.
 - `jobs`: unique job identifiers, each with an ordered `operations` list.
-- Each operation names its `machine_id` and integer `duration_days`.
+- Each operation names its `machine_id` and integer `duration_days`. The
+  field names say days, but any one integer time unit works when every
+  duration, release and due value uses it; results come back in that unit.
 - An operation that could run elsewhere adds `machine_options`, one entry per
   alternative machine with that machine's own `duration_days`. The declared
   `machine_id` is the default choice and is part of the option set, so a
@@ -59,22 +73,26 @@ The verifier independently checks machine exclusivity, the per-job precedence
 chain, machine assignment, processing durations, and release-date observance,
 then recomputes the declared objective — makespan, or total tardiness against
 the due dates. A raw `proved_optimal` field is diagnostic. The receipt carries
-`solver_proved` only after an admitted adapter supplies an explicit terminal
-proof signal. Job shop carries no independent optimality certificate.
+`solver_proved` only when the engine itself reports a terminal proof: an
+`OPTIMAL` status with the gap closed.
+Job shop carries no independent optimality certificate.
 
 Published optima for named benchmark instances are regression comparisons,
 never certificates.
 
 ## Time budgets
 
-Job shop is NP-hard and the launch resource envelope is not yet qualified.
-Use discovered limits and treat a time limit as a budget, never as an
-optimality guarantee. A valid incumbent may settle as feasible without a
-proof; a result that the verifier cannot validate must refund.
+Job shop is NP-hard: a large instance can end at its time limit with a valid
+schedule and no proof. Use discovered limits and treat a time limit as a
+budget, never as an optimality guarantee. A valid incumbent may settle as
+feasible without a proof; a result that the verifier cannot validate must
+refund.
 
 ## Job intents
 
-- `optimize` — schedule and report honestly.
+`job_intent` is a top-level field of `input`; omitted, it is `optimize`.
+
+- `optimize` — build a schedule and return it with its objective.
 - `verify_only` — supply `candidate_schedule` (a start day per operation,
   covering every operation exactly once) and get validity plus the exact
   recomputed objective.
@@ -105,9 +123,13 @@ proof; a result that the verifier cannot validate must refund.
       }
     ],
     "objectives": {"primary": "minimize_makespan"}
-  }
+  },
+  "policy": {"max_price_usdc": "0.50"}
 }
 ```
+
+Over MCP, pass the same object as the `arguments` of
+`agentsolve.quotes.create`.
 
 For the total-tardiness variant, declare the objective and per-job dates:
 

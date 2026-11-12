@@ -7,9 +7,10 @@ discrete demand. For payload details, see
 ## Math Contract
 
 The decision is one order quantity for one period. Demand must be represented by
-explicit outcomes and probabilities or scenario weights. The verifier recomputes
-expected cost or expected profit over those outcomes and may use closed-form or
-grid evidence for the launch class.
+explicit outcomes and probabilities: each item lists its demand scenarios, and
+one item's probabilities must sum to 1. The verifier recomputes expected cost
+or expected profit over those outcomes. Inside its work cap it also enumerates
+the order grid exactly and certifies a result that matches the optimum.
 
 ## Scenario Quality
 
@@ -20,7 +21,10 @@ the scenarios are explicitly supplied and accepted by the caller.
 
 ## Risk Boundary
 
-Stage 0 newsvendor optimizes expected cost or expected profit. Required risk
-constraints, distributionally robust inventory, or multi-period rollout should
-be routed to `chance_constrained_optimization` or `multi_period_inventory`
-deferral guidance as appropriate.
+Newsvendor optimizes expected cost or expected profit. The API answers needs
+beyond that with typed deferral codes:
+
+- a required risk constraint: deferral code `chance_constrained_optimization`
+- an ambiguity set: deferral code `distributionally_robust_inventory`
+- several ordering periods: deferral code `multi_period_inventory`
+- a rolling reorder policy: deferral code `rolling_inventory_policy`

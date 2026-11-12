@@ -9,6 +9,15 @@ Use `9.3.bin_packing` to partition indivisible, positive-integer-size items into
 priced bins drawn from one or more bin types, minimizing the total cost of the
 bins used, optionally keeping conflicting item pairs in separate bins.
 
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "pack indivisible items into the fewest bins" | `9.3.bin_packing` | Declare `bin_types`; a single unit-cost type gives minimum-count packing, `conflicts` keeps item pairs apart. |
+| "keep incompatible items in separate bins" | `9.3.bin_packing` | Set `conflicts` to the item pairs that may not share a bin. |
+| "items have several sizes or capacities" | typed deferral `bin_packing_multidimensional` | One size dimension only. |
+| "bins have different capacities or costs" | `9.3.bin_packing` | Declare each `{capacity, cost}` in `bin_types`; a used bin is priced at the cheapest type that holds it. |
+
 ## Formulation Recipe
 
 - `bin_types` is a non-empty list of `{capacity, cost}` bin types, each a
@@ -41,8 +50,8 @@ bins used, optionally keeping conflicting item pairs in separate bins.
 The verifier checks exact item membership, bin capacity, conflicts, and total
 cost. Its exact-proof envelope covers one-bin-type instances through 16 items
 and heterogeneous-bin instances through 12 items; that predicate is separate
-from the pricing-tier label (`S` item_count <= 16, `M` 17–80,
-`L` 81–1,000). Outside the exact-proof envelope,
-meeting the exact integer volume lower bound proves the named proposition because
-every packing costs at least `ceil(total_size * min(cost / capacity))`. A
-reported bound or approximate equality alone does not create a proof.
+from the size tier (`S` item_count <= 16, `M` 17–80, `L` 81–1,000). Outside
+the exact-proof envelope, meeting the exact integer volume lower bound proves
+the proposition `bin_packing.volume_lower_bound_optimality`, because every
+packing costs at least `ceil(total_size * min(cost / capacity))`. A reported
+bound or approximate equality alone does not create a proof.

@@ -29,10 +29,22 @@ Three standard-library command-line tools for native instance files:
   (`--settled-threshold N` takes the best of the first N responses);
   `--select` takes `solver_admission_id` values printed by the quote, not
   engine names; `--auto-route` is the other explicit alternative. Funding
-  automation covers supported account-credit, trial-credit, Stripe, and
-  faucet flows. Follow the quote and
-  [payment-rails reference](../references/reference-payment-rails.md) for
-  x402 or a review-gated rail.
+  automation covers account-credit, trial-credit, Stripe, and faucet flows,
+  each of which needs a claimed account. For x402 the tools sign nothing:
+  when it is the only way to pay they write the quote's payment template to
+  `STEM.x402.json` beside the results and exit with status 3. Have your
+  wallet sign it in place, then re-run the same command with
+  `--x402-payment STEM.x402.json`
+  ([paying by x402](../references/reference-payment-x402.md)). Quotes last
+  15 minutes unless `--quote-ttl-seconds` says otherwise. The
+  [payment-rails reference](../references/reference-payment-rails.md)
+  covers a claimed account's rails and a review-gated rail. Translated
+  documents are written to the working directory, results to `--out-dir`.
+  `STEM.result.json` holds the job read: the solution under `job.output`
+  and the receipt under `job.routing_receipt`.
+
+`python tools/solve.py --help` documents every flag. The tools' source is
+not documentation: nothing in it is needed to run them.
 
 Typical session:
 

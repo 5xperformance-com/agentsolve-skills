@@ -9,6 +9,14 @@ Use `9.2.set_cover` to choose a minimum-total-cost subset of submitted sets so
 that every submitted element is covered at least its required number of times,
 or is left short at a declared per-unit penalty.
 
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "choose the cheapest sets covering every element" | `9.2.set_cover` | Weighted set multicover; set `demand` per element (default 1). |
+| "each element needs several independent covers" | `9.2.set_cover` | Set the element's `demand` to the required cover count. |
+| "we can leave an element uncovered for a penalty" | `9.2.set_cover` | Set the element's `uncovered_penalty` to the per-unit cost of leaving it short. |
+
 ## Formulation Recipe
 
 - `elements` has 1–2,500 unique identifiers. Each element may carry an integer
@@ -23,7 +31,7 @@ or is left short at a declared per-unit penalty.
   penalized element may occur in fewer (its shortfall is priced, not rejected).
 - The objective is total set cost plus every element's unmet demand priced at
   its `uncovered_penalty`.
-- Total set-element incidence is capped at 250,000. Pricing tiers band on
+- Total set-element incidence is capped at 250,000. Size tiers follow the
   set count: `S` <= 20, `M` 21–1,000, `L` 1,001–10,000.
 - `candidate_set_ids` is accepted only with `verify_only`.
 

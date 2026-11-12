@@ -8,20 +8,22 @@ HTTP 413 `INVALID_PAYLOAD` and a `rejection_reason` of the form
 after canonicalization is refused by the quote with `field_name: "input"`.
 
 Size the payload before submitting: encode it canonically and measure it.
+The canonical encoding is JSON with object keys sorted, no whitespace between
+tokens, and UTF-8 text with non-ASCII characters left unescaped.
 Node names, distance matrices and per-pair cost lists dominate; an assignment
 instance with 400 agents and 200 tasks is about 2.8 MiB, a CVRP instance with
 251 customers about 0.9 MiB.
 
 ## Upload handles
 
-Deployments may enable the API-origin upload path. Where it is enabled, an
-input you prefer not to embed goes through a handle:
+An input you would rather not embed in the request goes through an upload
+handle:
 
 1. `POST /v1/inputs/presign` with `problem_type`, `problem_schema_version`,
    `allowed_regions`, and the commitments `content_sha256` and `size_bytes`
    computed over the canonical encoding of the payload. The response carries
-   `input_handle` and `upload_url`; a declared size above the deployment's
-   upload limit is refused with HTTP 413.
+   `input_handle` and `upload_url`; a declared size above the upload limit is
+   refused with HTTP 413.
 2. `PUT <upload_url>` with the JSON payload as the body. The response reports
    `state: "uploaded"` and `payload_sha256`; compare it with your commitment.
    A second upload to the same handle is refused with HTTP 409.
@@ -31,6 +33,6 @@ input you prefer not to embed goes through a handle:
 Handles expire unused after 24 hours and their upload authorization after 15
 minutes. Where uploads are disabled the presign route answers HTTP 503
 `INPUT_UPLOAD_UNAVAILABLE`; keep the inline payload within the limit or reduce
-the instance. The upload limit is the deployment's configured value and never
-exceeds the 16 MiB inline limit, so an instance larger than 16 MiB after
-canonical encoding must be reduced on either path.
+the instance. The upload limit is 16 MiB, the same as the inline limit, so an
+instance larger than 16 MiB after canonical encoding must be reduced on either
+path.

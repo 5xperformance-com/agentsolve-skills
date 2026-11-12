@@ -9,9 +9,10 @@ The verifier checks constraint validity and objective recomputation. Backend
 metadata may include `solver_status`, `best_bound`, `optimality_gap`, and
 `optimality_certified`.
 
-`optimality_certified` is a backward-compatible solver diagnostic. It can be
-true only when the admitted adapter maps an explicit terminal `OPTIMAL` proof
-signal. A zero or approximately zero gap never creates a proof claim.
+`optimality_certified` on a receipt reads true only when the verifier
+established `global_optimality`, which it does not for MILP. A solver's own
+proof appears as the `solver_proved` claim. A zero or approximately zero gap
+never creates a proof claim.
 
 Use `attestation.claims` for authoritative meaning: `valid_result` is
 verifier-sourced, `solver_proved` is solver-sourced, and
@@ -28,8 +29,8 @@ interpretation.
 
 Prefer tight formulations, finite bounds, and big-M values derived from real
 limits. LP-relaxation tightness matters. Cut-family language is useful only as
-general method context; Stage 0 exposes no public warm-start payload, and warm
-starts are internal adapter behavior until a later schema says otherwise.
+general method context; the schema exposes no public warm-start payload, and
+warm starts are internal adapter behavior until a later schema says otherwise.
 
 See [formulation-patterns.md](formulation-patterns.md) and
 [infeasibility-diagnostics.md](infeasibility-diagnostics.md).

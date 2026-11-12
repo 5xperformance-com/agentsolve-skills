@@ -10,8 +10,15 @@ instance (`foo.tsp` -> `foo.result.json`, plus a TSPLIB `foo.tour` for
 write them where your task expects (for example `--out-dir solutions`); the
 default is the document's own directory.
 
-The quote remains authoritative for every rail. x402 and review-gated rails
-require their documented quote payloads; this helper never invents them.
+The quote remains authoritative for every rail. The tool signs nothing: when
+x402 is the only way to pay, it writes the quote's payment template to
+`STEM.x402.json` and exits with status 3; have your wallet sign it and re-run
+the same command with `--x402-payment FILE`. Review-gated rails require their
+documented quote payloads; this helper never invents them.
+
+Every quote asks for a 15-minute lifetime (`--quote-ttl-seconds`): an
+unclaimed account holds one unpaid quote at a time, so a failed run must not
+leave a day-long one behind.
 
 On completion stdout is one receipt-backed answer block per document: best
 objective and winning engine, certificate status (proof language only when
@@ -56,8 +63,8 @@ budget automatically — the tool never sells a solve longer than its own
 patience — and `--poll-timeout` overrides it.
 
 `--quote-only` prices the submission without creating a job: a compact
-table (engine, admission id, price, ceiling, rails) on stdout, with the
-full quote JSON written to `STEM.quote.json` beside the results (or on
+table (engine, admission id, price, ceiling, rails) on stdout, with a
+summary of the quote written to `STEM.quote.json` beside the results (or on
 stdout under `--json`). `--detach` creates the
 job and exits immediately, printing the job id and the exact resume
 command; `--resume JOB_ID` (with the same document) polls an existing
@@ -71,6 +78,7 @@ Usage:
         [--time-budget-ms N] [--constraints JSON] [--rerun]
         [--quote-only | --detach | --resume JOB_ID]
         [--max-price-usdc X] [--max-concurrency N] [--quiet | --json]
+        [--x402-payment FILE] [--quote-ttl-seconds N]
         [--base-url URL] [--out-dir DIR] [--receipts-dir DIR]
         [--poll-timeout SECONDS]
 
@@ -105,17 +113,81 @@ CAPTURABLE_INTENT_STATUSES = {"requires_capture", "succeeded"}
 COHORT_CAP = 10
 MAX_REQUEST_ATTEMPTS = 4
 HEARTBEAT_SECONDS = 30.0
+# An unpaid quote blocks an unclaimed account's next quote until it expires,
+# so the tool never leaves a day-long one behind.
+DEFAULT_QUOTE_TTL_SECONDS = 900
+MIN_QUOTE_TTL_SECONDS = 60
+# Exit status when the only thing a run still needs is an x402 signature.
+X402_HANDOFF_EXIT_CODE = 3
 
 
 class FundingError(SystemExit):
     """No payment option was fundable; the message enumerates recoveries."""
 
 
+class X402PaymentRequired(SystemExit):
+    """The quote is payable by x402 only; the caller's wallet must sign."""
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        quote: dict[str, Any] | None = None,
+        option: dict[str, Any] | None = None,
+        key: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.quote = quote or {}
+        self.option = option or {}
+        self.key = key
+
+
+def _live_unpaid_quote_refusal(detail: str) -> dict[str, Any] | None:
+    """The error object of a 429 that is the one-unpaid-quote rule, else None."""
+    try:
+        parsed = json.loads(detail)
+    except json.JSONDecodeError:
+        return None
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    if not isinstance(error, dict):
+        return None
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    if details.get("rejection_reason") == "live_unpaid_quote" or (
+        "already has a live unpaid quote" in str(error.get("message", ""))
+    ):
+        return error
+    return None
+
+
+def _live_unpaid_quote_message(
+    method: str, url: str, error: dict[str, Any], retry_after: str | None
+) -> str:
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    extra = details.get("extra") if isinstance(details.get("extra"), dict) else {}
+    live = ""
+    if extra.get("live_quote_id"):
+        live = f" (quote {extra['live_quote_id']}"
+        if extra.get("live_quote_expires_at"):
+            live += f", which expires at {extra['live_quote_expires_at']}"
+        live += ")"
+    wait = f" The API says to wait {retry_after} seconds." if retry_after else ""
+    return (
+        f"{method} {url} was refused with HTTP 429: an unclaimed account holds "
+        f"one unpaid quote at a time, and one is live{live}. Pay that quote, "
+        "or wait for it to expire, then re-run; a short retry cannot help."
+        f"{wait} Quotes from this tool last {DEFAULT_QUOTE_TTL_SECONDS // 60} "
+        "minutes unless --quote-ttl-seconds says otherwise."
+    )
+
+
 def _retryable_rate_limit(status: int, detail: str) -> bool:
     """A 429 whose body does not explicitly say retryable=false, unless the
     body says the payment authorization was already consumed — replaying
-    that request would retry a payment, not just a queue admission."""
+    that request would retry a payment, not just a queue admission — or it
+    is the one-unpaid-quote rule, which only paying or waiting clears."""
     if status != 429:
+        return False
+    if _live_unpaid_quote_refusal(detail) is not None:
         return False
     try:
         parsed = json.loads(detail)
@@ -172,6 +244,13 @@ def request_json(method: str, url: str, body: dict[str, Any] | None = None) -> d
                 )
                 time.sleep(delay)
                 continue
+            live_quote = _live_unpaid_quote_refusal(detail) if exc.code == 429 else None
+            if live_quote is not None:
+                raise SystemExit(
+                    _live_unpaid_quote_message(
+                        method, url, live_quote, exc.headers.get("Retry-After")
+                    )
+                ) from exc
             raise SystemExit(f"{method} {url} failed with HTTP {exc.code}: {detail}") from exc
         except error.URLError as exc:
             raise SystemExit(
@@ -314,6 +393,27 @@ def objective_sense(document: dict[str, Any]) -> str:
     return "min"
 
 
+def quote_ttl_seconds(routing: argparse.Namespace) -> int:
+    """The quote lifetime this invocation asks for, flag over default."""
+    return getattr(routing, "quote_ttl_seconds", None) or DEFAULT_QUOTE_TTL_SECONDS
+
+
+def _quote_input(document: dict[str, Any]) -> Any:
+    """The canonical input to quote.
+
+    The MPS translator writes ``job_intent`` into every document, and the
+    LP schema refuses the field, so it is left out for that class only.
+    """
+    payload = document["payload"]
+    if (
+        document.get("problem_type") == "2.1.lp"
+        and isinstance(payload, dict)
+        and "job_intent" in payload
+    ):
+        return {name: value for name, value in payload.items() if name != "job_intent"}
+    return payload
+
+
 def quote_body(
     key: str,
     document: dict[str, Any],
@@ -321,6 +421,7 @@ def quote_body(
     constraints: dict[str, Any] | None = None,
     max_price_usdc: str | None = None,
     faucet_program_id: str | None = None,
+    requested_ttl_seconds: int | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "idempotency_key": (
@@ -328,13 +429,15 @@ def quote_body(
         ),
         "problem_type": document["problem_type"],
         "problem_schema_version": document["problem_schema_version"],
-        "input": document["payload"],
+        "input": _quote_input(document),
         "policy": {
             "max_price_usdc": (
                 max_price_usdc or os.environ.get("AGENTSOLVE_MAX_PRICE_USDC", "1.00")
             ),
         },
     }
+    if requested_ttl_seconds is not None:
+        body["requested_ttl_seconds"] = requested_ttl_seconds
     if constraints:
         body["constraints"] = constraints
     if faucet_program_id:
@@ -492,12 +595,71 @@ def funding_failure_message(
     return "\n".join(lines)
 
 
+def _available_x402_option(quote: dict[str, Any]) -> dict[str, Any] | None:
+    requirement = quote.get("payment_requirement")
+    if not isinstance(requirement, dict):
+        return None
+    for option in requirement.get("options", []):
+        if isinstance(option, dict) and option.get("rail") == "x402" and option.get("available"):
+            return option
+    return None
+
+
+def signed_x402_file(routing: argparse.Namespace) -> Path | None:
+    """Where the caller's signed x402 payment is, flag over environment."""
+    supplied = getattr(routing, "x402_payment", None) or os.environ.get(
+        "AGENTSOLVE_X402_PAYMENT_FILE"
+    )
+    return Path(supplied) if supplied else None
+
+
+def _read_x402_payment(payment_file: Path) -> Any:
+    try:
+        return json.loads(payment_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"{payment_file}: cannot read the x402 payment: {exc}") from exc
+
+
+def supplied_x402_payment(
+    payment_file: Path, option: dict[str, Any] | None, *, cohort_size: int
+) -> dict[str, Any]:
+    """The job's x402 payment, from the payload the caller's wallet signed.
+
+    The file is the tool's own ``STEM.x402.json`` with its payment signed in
+    place, the whole payment object, or the signed ``payment_payload``
+    alone. The tool adds nothing of its own: for a bare payload the other
+    fields come from the quote's x402 option.
+    """
+    if option is None:
+        raise FundingError(
+            "an x402 payment was supplied, but this quote does not offer x402"
+        )
+    if cohort_size > 1:
+        raise FundingError(
+            "x402 pays for one solver per job; a portfolio pays from account "
+            "credit or trial credit"
+        )
+    supplied = _read_x402_payment(payment_file)
+    if isinstance(supplied, dict) and isinstance(supplied.get("payment_object"), dict):
+        return supplied["payment_object"]
+    if isinstance(supplied, dict) and supplied.get("rail") == "x402":
+        return supplied
+    if isinstance(supplied, dict) and "x402Version" in supplied:
+        template = (option.get("instructions") or {}).get("payment_object") or {}
+        return {**template, "payment_payload": supplied}
+    raise SystemExit(
+        f"{payment_file}: expected the signed STEM.x402.json, the whole x402 "
+        "payment object, or the signed payment_payload"
+    )
+
+
 def resolve_payment(
     base: str,
     key: str,
     quote: dict[str, Any],
     *,
     cohort_size: int = 1,
+    x402_payment_file: Path | None = None,
 ) -> dict[str, Any] | None:
     requirement = quote.get("payment_requirement")
     if not isinstance(requirement, dict) or requirement.get("requires_payment") is False:
@@ -507,6 +669,10 @@ def resolve_payment(
         for option in requirement.get("options", [])
         if isinstance(option, dict) and option.get("available")
     }
+    if x402_payment_file is not None:
+        return supplied_x402_payment(
+            x402_payment_file, available.get("x402"), cohort_size=cohort_size
+        )
     if "account_credit" in available:
         option = available["account_credit"]
         payment_object = (option.get("instructions") or {}).get("payment_object") or {}
@@ -897,8 +1063,15 @@ def _create_job_with_funding(
             f"the cohort size ({cohort_size}); omit it to wait for the whole "
             "cohort"
         )
+    signed_x402 = signed_x402_file(routing)
     try:
-        payment = resolve_payment(base, key, quote, cohort_size=cohort_size)
+        payment = resolve_payment(
+            base,
+            key,
+            quote,
+            cohort_size=cohort_size,
+            x402_payment_file=signed_x402,
+        )
     except FundingError as unresolved:
         attempts: list[str] = []
         for program_id in discover_faucet_programs(base, document["problem_type"], quote):
@@ -912,6 +1085,7 @@ def _create_job_with_funding(
                         constraints=quote_constraints(routing),
                         max_price_usdc=getattr(routing, "max_price_usdc", None),
                         faucet_program_id=program_id,
+                        requested_ttl_seconds=quote_ttl_seconds(routing),
                     ),
                 )
             except SystemExit as exc:
@@ -960,6 +1134,13 @@ def _create_job_with_funding(
                 file=sys.stderr,
             )
             return job, candidate, faucet_routing, f"faucet ({program_id})"
+        x402_option = _available_x402_option(quote)
+        if x402_option is not None and cohort_size <= 1 and signed_x402 is None:
+            # The quote is payable, only not by this tool: hand the exact
+            # payment to the caller's wallet instead of failing.
+            raise X402PaymentRequired(
+                quote=quote, option=x402_option, key=key
+            ) from unresolved
         detail = (
             "; ".join(attempts)
             if attempts
@@ -971,6 +1152,13 @@ def _create_job_with_funding(
             "POST", f"{base}/v1/jobs", job_body(key, quote, routing_body, payment)
         )
     except SystemExit as exc:
+        if "QUOTE_EXPIRED" in str(exc):
+            raise SystemExit(
+                f"{exc}\nrecovery: the quote expired before the job was "
+                "created, and nothing was charged. Re-run with --rerun to "
+                "take a fresh quote; when paying by x402, sign the new "
+                "STEM.x402.json and pass that file to --x402-payment"
+            ) from exc
         if "portfolio_total_exceeds_price_ceiling" in str(exc):
             raise SystemExit(
                 f"{exc}\nrecovery: a portfolio's price is the SUM of its "
@@ -982,6 +1170,55 @@ def _create_job_with_funding(
         raise
     rail = payment["rail"] if payment else "none required (requires_payment=false)"
     return job, quote, routing_body, rail
+
+
+def write_x402_handoff(
+    handoff: X402PaymentRequired, destination: Path, stem: str, path: Path
+) -> X402PaymentRequired:
+    """Write the quote's x402 payment template and say how to come back.
+
+    Signing needs a wallet key, which never enters this tool: the caller's
+    wallet completes the template and the next run submits it.
+    """
+    instructions = handoff.option.get("instructions") or {}
+    handoff_path = destination / f"{stem}.x402.json"
+    expires_at = handoff.quote.get("quote_expires_at")
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "input_document": str(path),
+                # The next run replays this exact quote under this key.
+                "idempotency_key": handoff.key,
+                "quote_id": handoff.quote.get("quote_id"),
+                "quote_expires_at": expires_at,
+                "payment_object": instructions.get("payment_object"),
+                "note": instructions.get("note"),
+                "next_step": (
+                    "Have your wallet sign the USDC transfer authorization in "
+                    "payment_object.payment_payload, write the signed "
+                    "payload back into this file, and re-run the same "
+                    "command with --x402-payment pointing at it, before the "
+                    "quote expires."
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return X402PaymentRequired(
+        f"{stem}: this quote is payable by x402 only, and this tool does not "
+        f"sign payments. The payment template is in {handoff_path}. Have your "
+        "wallet sign the USDC transfer authorization it describes, valid for "
+        "no longer than its maxTimeoutSeconds and ending before the quote "
+        f"expires ({expires_at}). Write the signed payment_payload back into "
+        "that file, then re-run the same command with --x402-payment "
+        f"{handoff_path}.",
+        quote=handoff.quote,
+        option=handoff.option,
+        key=handoff.key,
+    )
 
 
 def _print_warnings(label: str, container: dict[str, Any], quiet: bool) -> None:
@@ -1080,6 +1317,13 @@ def submit_one(
         job: dict[str, Any] = {"job_id": resume_job_id}
     else:
         key = stable_key(path, document, routing)
+        signed_x402 = signed_x402_file(routing)
+        if signed_x402 is not None:
+            supplied = _read_x402_payment(signed_x402)
+            if isinstance(supplied, dict) and isinstance(supplied.get("idempotency_key"), str):
+                # The signed hand-off file names the quote it pays for, so
+                # the run replays that quote whatever else changed.
+                key = supplied["idempotency_key"]
         quote = request_json(
             "POST",
             f"{base}/v1/quotes",
@@ -1088,6 +1332,7 @@ def submit_one(
                 document,
                 constraints=quote_constraints(routing),
                 max_price_usdc=getattr(routing, "max_price_usdc", None),
+                requested_ttl_seconds=quote_ttl_seconds(routing),
             ),
         )
         if not (quote.get("quote_id") or quote.get("id")):
@@ -1103,9 +1348,12 @@ def submit_one(
                 )
                 quote_summary["quote_file"] = str(quote_path)
             return quote_summary
-        job, quote, _, funding_rail = _create_job_with_funding(
-            base, key, document, quote, routing
-        )
+        try:
+            job, quote, _, funding_rail = _create_job_with_funding(
+                base, key, document, quote, routing
+            )
+        except X402PaymentRequired as handoff:
+            raise write_x402_handoff(handoff, destination, stem, path) from handoff
         if not quiet:
             print(
                 f"{stem}: funding rail {funding_rail}; "
@@ -1474,7 +1722,7 @@ def _quote_block(summary: dict[str, Any]) -> str | None:
                 f"  warning {warning.get('code')}: {warning.get('message')}"
             )
     lines.append(
-        f"  full quote: {quote_file}; submit by re-running without --quote-only"
+        f"  quote summary: {quote_file}; submit by re-running without --quote-only"
     )
     return "\n".join(lines)
 
@@ -1589,6 +1837,11 @@ def render_summaries(summaries: list[dict[str, Any]], *, machine: bool) -> str:
     blocks: list[str] = []
     rendered_answer = False
     for summary in summaries:
+        if summary.get("x402_payment_required"):
+            blocks.append(
+                f"PAYMENT NEEDED {summary.get('input_document')}: {summary['next_step']}"
+            )
+            continue
         if summary.get("error"):
             blocks.append(f"FAILED {summary.get('input_document')}: {summary['error']}")
             continue
@@ -1721,7 +1974,7 @@ def build_parser() -> argparse.ArgumentParser:
             "price the submission and stop, without creating a job: a "
             "compact table of candidates with engine names, selectable "
             "admission ids, per-member prices, the ceiling, and payment "
-            "rails; the full quote JSON "
+            "rails; a summary of the quote "
             "lands in STEM.quote.json (stdout under --json)"
         ),
     )
@@ -1753,6 +2006,30 @@ def build_parser() -> argparse.ArgumentParser:
             "or 1.00). A portfolio's total is the SUM of member prices and "
             "is checked against this same ceiling at job creation — raise "
             "it for large cohorts"
+        ),
+    )
+    parser.add_argument(
+        "--x402-payment",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "pay this one document's quote by x402: FILE holds the "
+            "payment_payload your wallet signed from STEM.x402.json (or the "
+            "whole payment object). Also read from "
+            "AGENTSOLVE_X402_PAYMENT_FILE. The tool signs nothing itself"
+        ),
+    )
+    parser.add_argument(
+        "--quote-ttl-seconds",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "how long the quote stays open (default "
+            f"{DEFAULT_QUOTE_TTL_SECONDS}, minimum {MIN_QUOTE_TTL_SECONDS}). "
+            "An unclaimed account holds one unpaid quote at a time, so a "
+            "short lifetime keeps a failed run from blocking the next quote"
         ),
     )
     parser.add_argument(
@@ -1839,6 +2116,15 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit("--resume polls one job: pass exactly one document")
     if args.max_concurrency < 1:
         raise SystemExit("--max-concurrency must be at least 1")
+    requested_ttl = getattr(args, "quote_ttl_seconds", None)
+    if requested_ttl is not None and requested_ttl < MIN_QUOTE_TTL_SECONDS:
+        raise SystemExit(f"--quote-ttl-seconds must be at least {MIN_QUOTE_TTL_SECONDS}")
+    if (
+        getattr(args, "x402_payment", None) or os.environ.get("AGENTSOLVE_X402_PAYMENT_FILE")
+    ) and len(args.documents) != 1:
+        raise SystemExit(
+            "an x402 payment pays one quote: pass exactly one document with it"
+        )
     args.quiet = args.quiet or args.json
     base = args.base_url.rstrip("/")
 
@@ -1846,14 +2132,27 @@ def run(args: argparse.Namespace) -> int:
         return submit_one(base, path, effective_poll_timeout(args), args.out_dir, args)
 
     failures: list[str] = []
+    handoffs = 0
+
+    def unfinished(path: Path, exc: SystemExit) -> dict[str, Any]:
+        nonlocal handoffs
+        failures.append(str(exc))
+        if isinstance(exc, X402PaymentRequired):
+            handoffs += 1
+            return {
+                "input_document": str(path),
+                "x402_payment_required": True,
+                "next_step": str(exc),
+            }
+        return {"input_document": str(path), "error": str(exc)}
+
     if len(args.documents) == 1 or args.max_concurrency == 1:
         summaries: list[dict[str, Any]] = []
         for path in args.documents:
             try:
                 summaries.append(run_one(path))
             except SystemExit as exc:
-                failures.append(str(exc))
-                summaries.append({"input_document": str(path), "error": str(exc)})
+                summaries.append(unfinished(path, exc))
     else:
         from concurrent.futures import ThreadPoolExecutor
 
@@ -1865,13 +2164,13 @@ def run(args: argparse.Namespace) -> int:
                 try:
                     summaries.append(future.result())
                 except SystemExit as exc:
-                    failures.append(str(exc))
-                    summaries.append({"input_document": str(path), "error": str(exc)})
+                    summaries.append(unfinished(path, exc))
     print(render_summaries(summaries, machine=args.json))
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
-        return 1
+        # Nothing failed if every document only waits for its x402 signature.
+        return X402_HANDOFF_EXIT_CODE if handoffs == len(failures) else 1
     if not args.quiet and not args.quote_only and not args.detach:
         total = _price_total(summaries)
         if total is not None:

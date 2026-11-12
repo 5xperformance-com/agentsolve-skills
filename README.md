@@ -13,15 +13,17 @@ without ever touching a solver-native format.
 ```
 plugins/agentsolve/skills/agentsolve/
 ├── SKILL.md          # entrypoint: happy path, launch classes, guardrails
-├── references/       # 31 one-hop references: class selection, per-class guides,
+├── references/       # 38 one-hop references: class selection, per-class guides,
 │                     # methods, formulation patterns, REST/MCP/payments/receipts
-├── examples/         # 12 runnable quote → job → poll examples, one per launch
+├── examples/         # 14 runnable quote → job → poll examples, one per launch
 │                     # class, each with a deterministic --dry-run
+├── tools/            # three standard-library tools: translate a native instance
+│                     # file, submit a canonical document, or do both in one call
 └── manifest.json     # bundle inventory and publication metadata
 ```
 
 The package is generated from AgentSolve's governed adoption corpus and versioned with the
-canonical problem language it teaches (current adoption version: 0.13.0).
+canonical problem language it teaches (current adoption version: 0.25.1).
 
 ## Install
 
@@ -48,7 +50,8 @@ Every example has a deterministic dry-run mode:
 python plugins/agentsolve/skills/agentsolve/examples/run_tsp.py --dry-run
 ```
 
-Point the same script at the live API with `--base-url` (or `AGENTSOLVE_BASE_URL`).
+The live API is at `https://api.agentsolve.io`. A new agent pays by x402; see `SKILL.md`,
+"Before the first job".
 
 ## Links
 

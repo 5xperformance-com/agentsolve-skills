@@ -9,6 +9,19 @@ Use `4.3.scheduling.rostering` for one-site dated staff-slot assignment with
 hard skill coverage, availability, overlap, rest, hours, and consecutive-day
 rules, minimizing exact integer target and fairness penalties.
 
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "roster staff to shifts meeting coverage and fairness" | `4.3.scheduling.rostering` | Dated slots, skill coverage, hard limits, and integer penalties. |
+| "a senior can also cover a junior's shift" | `4.3.scheduling.rostering` | Declare `skill_substitution` `[from, to]` pairs; each member's effective skills expand by one hop. |
+| "one worker can cover several required roles in the same shift" | typed deferral `rostering_explicit_skill_assignment` | Assignments do not carry an explicit role, including when substitution makes one member cover two required skills in a slot. |
+| "staff prefer some shifts to others" | `4.3.scheduling.rostering` input v3 | Declare `assignment_costs` per staff and slot; they price the roster rather than forbidding anything. |
+| "employees bid for the shifts they want" | typed deferral `rostering_preference_bidding` | Bidding is not modelled. Declare `assignment_costs` when graded preference is what the bid really expresses. |
+| "these people are already promised these shifts" | `4.3.scheduling.rostering` input v3 | Declare `pinned_assignments` and `forbidden_assignments`; both are hard and are validated as eligible and available. |
+| "rebuild the roster but change as little as possible" | `4.3.scheduling.rostering` input v3 | Declare `baseline_roster` and a `penalties.churn` weight; the penalty prices every difference from the baseline. |
+| "everyone has contracted minimum hours" | `4.3.scheduling.rostering` input v3 | Declare `min_hours` per staff member beside the existing `max_hours`. |
+
 ## Formulation Recipe
 
 - `site_timezone` is an IANA zone used for local-day and weekend attribution.
@@ -34,7 +47,7 @@ rules, minimizing exact integer target and fairness penalties.
   instance rather than treated as a hint.
 - `assignment_costs` charges an integer cost when a `(staff_id, slot_id)` pair
   is assigned, so an unwelcome-but-legal shift can be priced instead of banned.
-- The price tier uses `staff_count * slot_count` — `S` <= 750,
+- The size tier uses `staff_count * slot_count` — `S` <= 750,
   `M` 751–12,000, `L` 12,001–1,000,000 — but measured evidence also depends on
   eligible-pair and skill density, coverage structure, and potential rest
   conflicts. The L tier is not a capacity claim across that range.

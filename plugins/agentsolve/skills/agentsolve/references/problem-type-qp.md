@@ -1,5 +1,7 @@
 # Problem Type: Convex QP
 
+Contents: Customer Phrasing · Formulation Recipe · Coefficient Convention · Deferrals · Result Interpretation · Minimal REST Sketch
+
 Canonical schema versions:
 
 - Input: `2.3.qp.input.v1`
@@ -12,6 +14,18 @@ model. Variables, constraint rows, and metadata use the `2.1.lp` vocabulary;
 only the objective function differs. A model with no quadratic term belongs in
 `2.1.lp`, whose verifier judges optimality by duality checks within the
 declared tolerance.
+
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "quadratic risk minimization / minimize variance subject to linear constraints" | `2.3.qp` | Enter a covariance `Σ` as `coeff_ii = Σ_ii` and `coeff_ij = 2Σ_ij`; do not silently linearize. |
+| "constrained least squares / curve fit with bounds" | `2.3.qp` | Expand `‖Nx − t‖²` into quadratic and linear objective terms; the rows stay linear. |
+| "smoothing or regularization with a quadratic penalty over a linear model" | `2.3.qp` | The penalty is a convex quadratic objective term; the model's rows stay linear. |
+| "use at most K of the options, or pay a fixed charge for using one" | typed deferral `quadratic_integer_variables` | Cardinality limits and fixed charges need integer decisions; `2.3.qp` is continuous. |
+| "robust coefficient set / ellipsoidal uncertainty" | typed deferral `quadratic_or_conic_optimization` | A robust counterpart is a conic program; no canonical schema accepts a cone. |
+| "non-convex quadratic (indefinite) objective" | typed deferral `nonconvex_quadratic_objective` | `2.3.qp` needs a positive-semidefinite form under `minimize` and a negative-semidefinite one under `maximize`. |
+| "quadratic constraint" | typed deferral `quadratic_constraint` | Constraint rows stay linear. |
 
 ## Formulation Recipe
 
@@ -37,10 +51,10 @@ declared tolerance.
   defaults to `1e-6` and is accepted in the band `[1e-9, 1e-3]`. It is not a
   hint: the verifier judges against it, and it changes the canonical problem
   hash.
-- Complexity tier: variable count selects the catalog band — `S` <= 25,
-  `M` 26–100, `L` 101–10,000. The schema also caps constraints at 50,000 and
-  quadratic terms at 250,000, and the quadratic terms may span at most 2,000
-  distinct variables. The descriptor adds `quadratic_term_count`,
+- Size tier (the quote's `complexity_tier`): variable count selects it —
+  `S` <= 25, `M` 26–100, `L` 101–10,000. The schema also caps constraints at
+  50,000 and quadratic terms at 250,000, and the quadratic terms may span at
+  most 2,000 distinct variables. The descriptor adds `quadratic_term_count`,
   `quadratic_support_count`, and `quadratic_coefficient_magnitude_span` to the
   linear features.
 
@@ -87,15 +101,14 @@ approximation:
 | a quadratic term inside a constraint row | code `quadratic_constraint`; nearest supported subset `2.3.qp` has linear rows |
 
 Two further needs are out of scope for every schema, so screen for them before
-quoting and return the deferral yourself:
+quoting. A payload that tries to express one is refused as `INVALID_PAYLOAD`:
 
-- deferral code `quadratic_or_conic_optimization` — conic rows or ellipsoidal
-  uncertainty sets
-- deferral code `native_multi_objective_optimization` — native
-  multi-objective frontiers
+- conic rows or ellipsoidal uncertainty sets; return the deferral code
+  `quadratic_or_conic_optimization` to your caller yourself
+- native multi-objective frontiers
 
-Provider-native payloads fall under deferral code
-`provider_native_payload_required`; submit the canonical schema instead.
+A solver-native payload is refused as `INVALID_PAYLOAD` too; submit the
+canonical schema instead.
 
 ## Result Interpretation
 
@@ -116,8 +129,7 @@ convention: in the minimization orientation, `nonneg` rows are non-positive,
   optimum, but only within that tolerance: the guarantee is a tolerance
   envelope, not an exact certificate, so no `independent_certificate` is
   issued for it.
-- That guarantee is exact for a positive-semidefinite quadratic part. A
-  matrix accepted inside the convexity tolerance `δ` can curve slightly
+- A matrix accepted inside the convexity tolerance `δ` can curve slightly
   downward along some direction; a verified point is then optimal only up to
   `δ·D²`, where `D` is the diameter of the feasible region, and if the region
   is unbounded along that direction (a free variable with a slightly negative
@@ -174,22 +186,13 @@ convention: in the minimization orientation, `nonneg` rows are non-positive,
         "constant": 0
       }
     }
-  }
+  },
+  "policy": {"max_price_usdc": "0.50"}
 }
 ```
 
-## Minimal MCP Sketch
-
-```json
-{
-  "name": "agentsolve.quotes.create",
-  "arguments": {
-    "idempotency_key": "quote-qp-001",
-    "problem_type": "2.3.qp",
-    "problem_schema_version": "2.3.qp.input.v1"
-  }
-}
-```
+Over MCP, pass the same object as the `arguments` of
+`agentsolve.quotes.create`.
 
 See [method-linear-programming.md](method-linear-programming.md),
 [formulation-patterns.md](formulation-patterns.md),

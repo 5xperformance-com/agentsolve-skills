@@ -1,6 +1,10 @@
-# Stage 0 Adoption Corpus
+# AgentSolve Skill: Source And Projections
 
-The authored Stage 0 adoption source lives at
+If you are reading this in the published `agentsolve-skills` repository, start
+from that repository's README. The paths below are in AgentSolve's own
+repository, where the skill is written.
+
+The authored source lives at
 `docs/adoption/stage0/source/`. This README is mirrored into the projection
 targets so every copy states the same source-of-truth rule.
 

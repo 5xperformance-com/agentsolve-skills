@@ -8,6 +8,15 @@ Canonical schema versions:
 Use `9.1.knapsack` to choose indivisible items maximizing exact integer value
 under one exact integer capacity, taking each item up to its quantity bound.
 
+## Customer Phrasing
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "choose the most valuable subset that fits one capacity" | `9.1.knapsack` | Bounded knapsack in exact integers; each item defaults to a single copy. The optimum is proved only inside the verifier's work cap. |
+| "take up to N copies of an item" | `9.1.knapsack` | Set the item's `quantity` bound to the number of copies available. |
+| "each item consumes several capacity dimensions" | typed deferral `knapsack_multi_capacity` | One scalar capacity only. |
+| "allocate items among several containers" | typed deferral `knapsack_multiple_containers` | One container only. |
+
 ## Formulation Recipe
 
 - `capacity` is from 0 through 75,000.
@@ -39,9 +48,10 @@ total value with exact integers. When the bounded dynamic-program work
 (binary-decomposed copies × `(capacity + 1)`) is at most 1,000,000, optimize
 results also receive a separate exact optimum-value check.
 Any feasible selection tied at that value is accepted; the verifier does not
-require the same witness. Pricing tiers band on the same bounded DP work:
+require the same witness. Size tiers follow the same bounded DP work:
 `S` <= 1,000,000, `M` to 20,000,000, `L` to 187,502,500.
 
 Above that work cap, validity and objective are independent checks, while
 global optimality remains solver-sourced and requires an explicit proof signal.
-`verify_only` never invokes the optimum recomputation.
+`verify_only` needs `candidate_item_ids`, the selected item ids with one entry
+per chosen copy, and never invokes the optimum recomputation.

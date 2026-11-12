@@ -1,83 +1,36 @@
 # Class Selection
 
-Choose the most specific class whose complete supported boundary fits the real
-decision. If a required semantic is deferred, return that deferral before
-creating a quote.
+Choose the most specific class whose whole boundary fits the real decision,
+then open only that class's reference (`problem-type-*.md`, linked from the
+first page). It holds that class's fields, customer phrasings and refused
+variants. Use LP or MILP only for a naturally linear model, not to get around
+another class's boundary. If a needed semantic is refused, say so before
+creating a quote; never drop or approximate it.
 
-| Customer phrasing | Stage 0 decision | Notes |
+| Class | Select when | Not when |
 |---|---|---|
-| "shortest tour through these addresses" | `1.1.tsp` | Single directed tour through every node. |
-| "one technician visits all stops" | `1.1.tsp` | Use CVRP if capacity or multiple routes matter. |
-| "several tours or salespeople" | typed deferral `tsp_multiple_tours` | The nearest TSP subset is one tour. |
-| "some locations are optional or have prizes" | typed deferral `tsp_optional_nodes` or `tsp_prize_collecting` | Every TSP node is mandatory. |
-| "routes for 5 vans with package weights" | `1.2.vrp.cvrp` | One-depot capacitated routing. |
-| "delivery routes with hard arrival windows and service times" | `1.2.vrp.cvrp` | Only the frozen static-travel hard-window subset applies. |
-| "pickup from suppliers then deliver to customers" | `1.2.vrp.cvrp` input v4 | Declare `pickup_delivery_pairs`; both stops ride one vehicle, pickup first, and the paired customers declare `demand: 0`. |
-| "same customer can be served by several trucks" | typed deferral `split_delivery_vrp` | Each customer is served once. |
-| "several depots feed the routes" | `1.2.vrp.cvrp` input v4 | Declare `depots` beside the primary `depot`, and give a vehicle its own `start_depot_id` and `end_depot_id`. |
-| "being late costs money rather than being forbidden" | `1.2.vrp.cvrp` input v4 | Declare `soft_time_windows` with `lateness_penalty_per_unit`; a node takes a hard window or a soft one, never both. |
-| "each driver has their own shift length" | `1.2.vrp.cvrp` input v4 | Declare a per-vehicle `duration_limit`; where a fleet limit also applies, the tighter binds. |
-| "each truck costs money to send out" | `1.2.vrp.cvrp` | Declare per-vehicle `fixed_cost` in distance units; unused vehicles are free. |
-| "only certain trucks may serve this site" | `1.2.vrp.cvrp` | Declare `eligible_vehicles` on the restricted customer. |
-| "vehicle types or driver skills" | typed deferral `heterogeneous_fleet_vrp` | Declare `fixed_cost` and `eligible_vehicles` instead when those capture the need. |
-| "travel time changes during the day" | typed deferral `time_dependent_travel` | Travel data is static. |
-| "minimize shipping cost with continuous flows" | `2.1.lp` | All variables and expressions must be linear and continuous. |
-| "choose which warehouse opens" | `2.2.milp` | Binary open decisions make it MILP. |
-| "our feasibility tolerance is looser than the default" | `2.2.milp` input v2 | Declare `metadata.feasibility_tolerance`; v2 hashes it and the verifier judges at the value you declared. |
-| "optimize profit and emissions and return a Pareto frontier" | typed deferral `native_multi_objective_optimization` | A caller-approved scalar objective is a different decision. |
-| "quadratic risk minimization / minimize variance subject to linear constraints" | `2.3.qp` | Enter a covariance `Σ` as `coeff_ii = Σ_ii` and `coeff_ij = 2Σ_ij`; do not silently linearize. |
-| "constrained least squares / curve fit with bounds" | `2.3.qp` | Expand `‖Nx − t‖²` into quadratic and linear objective terms; the rows stay linear. |
-| "smoothing or regularization with a quadratic penalty over a linear model" | `2.3.qp` | The penalty is a convex quadratic objective term; the model's rows stay linear. |
-| "use at most K of the options, or pay a fixed charge for using one" | typed deferral `quadratic_integer_variables` | Cardinality limits and fixed charges need integer decisions; `2.3.qp` is continuous. |
-| "robust coefficient set / ellipsoidal uncertainty" | typed deferral `quadratic_or_conic_optimization` | A robust counterpart is a conic program; no canonical schema accepts a cone. |
-| "non-convex quadratic (indefinite) objective" | typed deferral `nonconvex_quadratic_objective` | `2.3.qp` needs a positive-semidefinite form under `minimize` and a negative-semidefinite one under `maximize`. |
-| "quadratic constraint" | typed deferral `quadratic_constraint` | Constraint rows stay linear. |
-| "chance constrained capacity planning" | typed deferral `chance_constrained_optimization` | Expected-value modelling is not a chance constraint. |
-| "how many units should we stock for one sale period" | `3.1.newsvendor` | Explicit independent discrete SKU scenarios. |
-| "inventory policy over the next 12 months" | typed deferral `multi_period_inventory` | One static ordering period only. |
-| "SKUs share one purchasing budget" | typed deferral `capacity_coupled_inventory` | SKU decisions are independent. |
-| "demand is correlated across products" | typed deferral `correlated_inventory` | Scenarios are per SKU. |
-| "schedule activities with crews and precedence" | `4.1.scheduling.rcpsp` | Renewable resources and submitted precedences. |
-| "materials or cash have one total budget for the project" | `4.1.scheduling.rcpsp` | Declare `non_renewable_resources` budgets and per-mode consumption. |
-| "verify this submitted project schedule" | `4.1.scheduling.rcpsp` with `job_intent=verify_only` | The candidate must cover every activity. |
-| "durations are random and we need a robust schedule" | typed deferral `stochastic_durations` | Durations are deterministic integers. |
-| "optimize makespan and resource smoothing together" | typed deferral `multi_objective_scheduling` | The class objective is makespan only. |
-| "schedule jobs through machines in a fixed operation order" | `4.2.scheduling.jssp` | Fixed machine and order per operation. |
-| "minimize total lateness against job due dates" | `4.2.scheduling.jssp` with `objectives.primary=minimize_total_tardiness` | Per-job due dates and optional release days. |
-| "any qualified machine can do this operation" | `4.2.scheduling.jssp` input v3 | Declare per-operation `machine_options` with the duration on each machine; the receipt names the machine the schedule chose. |
-| "late orders differ in how much they cost us" | `4.2.scheduling.jssp` input v3 with `objectives.primary=minimize_total_tardiness` | Declare a per-job `weight`; the payload is rejected when the weighted objective could leave exact integer range. |
-| "changeover time depends on what ran before" | typed deferral `jssp_sequence_dependent_setup` | Sequence-dependent setup is not modelled. |
-| "roster staff to shifts meeting coverage and fairness" | `4.3.scheduling.rostering` | Dated slots, skill coverage, hard limits, and integer penalties. |
-| "a senior can also cover a junior's shift" | `4.3.scheduling.rostering` | Declare `skill_substitution` `[from, to]` pairs; each member's effective skills expand by one hop. |
-| "one worker can cover several required roles in the same shift" | typed deferral `rostering_explicit_skill_assignment` | Assignments do not carry an explicit role, including when substitution makes one member cover two required skills in a slot. |
-| "staff prefer some shifts to others" | `4.3.scheduling.rostering` input v3 | Declare `assignment_costs` per staff and slot; they price the roster rather than forbidding anything. |
-| "employees bid for the shifts they want" | typed deferral `rostering_preference_bidding` | Bidding is not modelled. Declare `assignment_costs` when graded preference is what the bid really expresses. |
-| "these people are already promised these shifts" | `4.3.scheduling.rostering` input v3 | Declare `pinned_assignments` and `forbidden_assignments`; both are hard and are validated as eligible and available. |
-| "rebuild the roster but change as little as possible" | `4.3.scheduling.rostering` input v3 | Declare `baseline_roster` and a `penalties.churn` weight; the penalty prices every difference from the baseline. |
-| "everyone has contracted minimum hours" | `4.3.scheduling.rostering` input v3 | Declare `min_hours` per staff member beside the existing `max_hours`. |
-| "assign these unit tasks to people or machines" | `5.1.assignment` | Sparse allowed pairs and integer weights. |
-| "each task consumes a different amount of worker time" | typed deferral `assignment_gap_consumption` | v1 consumes one capacity unit per task. |
-| "one task needs three people" | typed deferral `assignment_multi_unit_demand` | Tasks are indivisible and unit demand. |
-| "match residents to hospitals by preference lists" | typed deferral `assignment_stable_matching` | Weight optimization does not prove stability. |
-| "seat guests so compatible pairs sit together" | typed deferral `assignment_quadratic_interaction` | Pairwise interactions are quadratic. |
-| "choose the most valuable subset that fits one capacity" | `9.1.knapsack` | Exact integer bounded knapsack; each item defaults to a single copy. |
-| "take up to N copies of an item" | `9.1.knapsack` | Set the item's `quantity` bound to the number of copies available. |
-| "each item consumes several capacity dimensions" | typed deferral `knapsack_multi_capacity` | One scalar capacity only. |
-| "allocate items among several containers" | typed deferral `knapsack_multiple_containers` | One container only. |
-| "pack indivisible items into the fewest bins" | `9.3.bin_packing` | Declare `bin_types`; a single unit-cost type gives minimum-count packing, `conflicts` keeps item pairs apart. |
-| "keep incompatible items in separate bins" | `9.3.bin_packing` | Set `conflicts` to the item pairs that may not share a bin. |
-| "items have several sizes or capacities" | typed deferral `bin_packing_multidimensional` | One size dimension only. |
-| "bins have different capacities or costs" | `9.3.bin_packing` | Declare each `{capacity, cost}` in `bin_types`; a used bin is priced at the cheapest type that holds it. |
-| "choose the cheapest sets covering every element" | `9.2.set_cover` | Weighted set multicover; set `demand` per element (default 1). |
-| "each element needs several independent covers" | `9.2.set_cover` | Set the element's `demand` to the required cover count. |
-| "we can leave an element uncovered for a penalty" | `9.2.set_cover` | Set the element's `uncovered_penalty` to the per-unit cost of leaving it short. |
-| "ship goods from plants to customers through depots at least cost" | `6.1.min_cost_flow` | Supplies positive, demands negative, sum zero; costs per unit in declared fixed-precision units. |
-| "transportation or transshipment problem" | `6.1.min_cost_flow` | Supplies positive, demands negative, sum zero; costs per unit in declared fixed-precision units. |
-| "a depot can handle at most X units" | `6.1.min_cost_flow` | Split the node: in-node → out-node arc with `upper` X. |
-| "several products share the same trucks or pipes" | `2.1.lp` | Multi-commodity flow is a linear program over per-commodity arc variables. |
-| "a route costs a fixed amount to open" | `2.2.milp` | Binary open decisions make it MILP. |
-| "deliver as much as possible when supply falls short" | typed deferral `flow_supply_demand_imbalance` | Add a shortfall sink with the missing demand and a penalty cost, then the supplies balance. |
-| "send this OR-Tools or HiGHS native payload" | typed deferral `provider_native_payload_required` | Submit the canonical AgentSolve schema. |
+| `1.1.tsp` | one directed Hamiltonian tour visits every node | capacity, multiple tours, optional nodes, prizes, or visit times matter |
+| `1.2.vrp.cvrp` | capacitated routing from one or more depots, optionally with per-vehicle fixed costs, per-customer vehicle eligibility, paired pickup and delivery, and hard or priced time windows over static travel | split delivery, time-dependent travel, or rich vehicle types matter |
+| `2.1.lp` | all decisions are continuous and every expression is linear | integrality, nonlinear, stochastic, rolling re-solve, or native multi-objective semantics matter |
+| `2.2.milp` | at least one linear-model decision is integer or binary | nonlinear, stochastic, rolling re-solve, or native multi-objective semantics matter |
+| `2.3.qp` | all decisions are continuous, every constraint is linear, and the objective is a convex quadratic such as a variance, a least-squares fit, or a quadratic penalty | integer decisions, a non-convex objective, quadratic constraints, conic or robust uncertainty sets, or native multi-objective semantics matter |
+| `3.1.newsvendor` | independent single-period SKU quantities use explicit discrete demand scenarios | periods, coupled capacity, correlated demand, risk constraints, ambiguity sets, or rolling policy matter |
+| `4.1.scheduling.rcpsp` | fixed or submitted modes schedule project activities over renewable resources, non-renewable budgets, and precedences | stochastic durations, smoothing, or another objective matter |
+| `4.2.scheduling.jssp` | each job has a fixed ordered chain of operations, each on a fixed machine or one chosen from declared options, minimizing makespan or total (optionally weighted) tardiness against release and due days | setup sequence, preemption, blocking, or transport matter |
+| `4.3.scheduling.rostering` | dated staff-slot assignments meet exact-match coverage and hard work rules at minimum integer penalty | contracts, bidding, recurring patterns, sites, on-call states, rolling repair, or ambiguous multi-skill slot roles matter |
+| `5.1.assignment` | unit-demand tasks use sparse allowed agent-task pairs and integer weights | multi-unit consumption, preference stability, or pairwise interactions matter |
+| `9.1.knapsack` | indivisible items maximize value under one capacity, each item taken up to its quantity bound | several capacities or containers, fractions, dependencies, uncertainty, or several objectives matter |
+| `9.2.set_cover` | a minimum-total-cost subset of sets must cover every element at least its demand times, or leave it short at a declared per-unit penalty | capacities, interactions, uncertainty, or several objectives matter |
+| `9.3.bin_packing` | indivisible one-dimensional items use the lowest-cost bins drawn from priced bin types, optionally with conflict separation | dimensions, eligibility, splitting, or several objectives matter |
+| `6.1.min_cost_flow` | one commodity moves through a directed network from supplies to demands at least cost, with integer quantities, arc capacities and optional minimum shipments | several commodities share arcs, costs are not linear per unit, a route has a fixed charge, node capacities are not modelled by splitting, or supply and demand do not balance |
 
-Read the selected class reference and the live discovered schema before
-constructing the payload.
+## Refused For Every Class
+
+A typed deferral is a refusal with a code. Give the caller the code and the
+reason instead of a quote.
+
+| Customer phrasing | Decision | Notes |
+|---|---|---|
+| "optimize profit and emissions and return a Pareto frontier" | typed deferral `native_multi_objective_optimization` | Say so before quoting. This label is not a service code: rejection is class-specific (`knapsack_multiobjective`, for example) or `INVALID_PAYLOAD`. A caller-approved scalar objective is a different decision. |
+| "chance constrained capacity planning" | typed deferral `chance_constrained_optimization` | Expected-value modelling is not a chance constraint. |
+| "send this OR-Tools or HiGHS native payload" | typed deferral `provider_native_payload_required` | Submit the canonical AgentSolve schema. The service has no such code: a native payload is refused as `INVALID_PAYLOAD`. |

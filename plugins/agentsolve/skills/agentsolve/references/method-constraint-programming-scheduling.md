@@ -1,25 +1,27 @@
 # Method: Constraint-Programming Scheduling
 
-Stage 0 scheduling uses `4.1.scheduling.rcpsp` for deterministic RCPSP,
-MRCPSP, and MSPSP-style project schedules, and `4.2.scheduling.jssp` for
-fixed-route job shops. For RCPSP payload details, see
-[problem-type-rcpsp.md](problem-type-rcpsp.md).
+Scheduling uses `4.1.scheduling.rcpsp` for deterministic RCPSP, MRCPSP, and
+MSPSP-style project schedules, `4.2.scheduling.jssp` for fixed-route job
+shops, and `4.3.scheduling.rostering` for staff rosters. For payload details,
+see [problem-type-rcpsp.md](problem-type-rcpsp.md),
+[problem-type-jssp.md](problem-type-jssp.md), and
+[problem-type-rostering.md](problem-type-rostering.md).
 
 ## Family Scope
 
 Use RCPSP when activities have durations, precedence relations, renewable
-resources, calendars, non-renewable budgets, windows, and an optimize or
-verify-only job intent. CP-SAT may be an internal admitted backend, but
-agents must not draft CP-SAT payloads, option names, or logs.
+resources, calendars, non-renewable budgets, and windows. Checking an existing
+project schedule is not available yet.
+
+CP-SAT may be an internal admitted backend, but agents must not draft CP-SAT
+payloads, option names, or logs.
 
 ## Scheduling Semantics
 
 Generalized precedences use `FS`, `SS`, `FF`, and `SF` with `min_lag` and
 optional `max_lag`. Calendars are renewable-resource availability over
 half-open day ranges. `non_renewable_resources` declares whole-project
-consumable budgets spent once per selected mode. `verify_only` validates a
-caller-supplied candidate schedule under the same quote -> job -> poll
-lifecycle as optimize.
+consumable budgets spent once per selected mode.
 
 ## Deferrals
 
