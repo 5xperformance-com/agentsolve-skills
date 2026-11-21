@@ -13,7 +13,7 @@ without ever touching a solver-native format.
 ```
 plugins/agentsolve/skills/agentsolve/
 ├── SKILL.md          # entrypoint: happy path, launch classes, guardrails
-├── references/       # 38 one-hop references: class selection, per-class guides,
+├── references/       # 39 one-hop references: class selection, per-class guides,
 │                     # methods, formulation patterns, REST/MCP/payments/receipts
 ├── examples/         # 14 runnable quote → job → poll examples, one per launch
 │                     # class, each with a deterministic --dry-run
@@ -23,7 +23,7 @@ plugins/agentsolve/skills/agentsolve/
 ```
 
 The package is generated from AgentSolve's governed adoption corpus and versioned with the
-canonical problem language it teaches (current adoption version: 0.25.1).
+canonical problem language it teaches (current adoption version: 0.26.0).
 
 ## Install
 

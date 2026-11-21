@@ -33,7 +33,7 @@ and redacted `details`. A typed deferral sits in
 | `UNSUPPORTED_FAILOVER_MODE` | Set `policy.failover_mode` to `strict`; no other failover posture is available. |
 | `MODE_3_NO_ELIGIBLE_CANDIDATE` | Relax the policy or select a solver explicitly. |
 | `CONCURRENT_QUOTE_CONSUMPTION` | Poll or retry with the same idempotency key. |
-| `AUTHENTICATION_REQUIRED` | Three cases. A lapsed bearer: exchange the assertion again and repeat the same bootstrap. A 401 that says `active identity credential required`: the new bearer has not been bootstrapped yet; repeat the bootstrap. A 403 naming `required_scopes`: the credential lacks that scope; `billing:write` comes only with a claim. |
+| `AUTHENTICATION_REQUIRED` | Read `details.rejection_reason` first. A 403 with `contribution_required` is not a sign-in problem, and signing in or bootstrapping again never cures it: the account has no verified job yet. Run one job to a verified result (`SETTLED`), then ask again ([track records](reference-solver-track-records.md)). Without a rejection reason, three cases are cured by signing in again or by a wider scope. A lapsed bearer: exchange the assertion again and repeat the same bootstrap. A 401 that says `active identity credential required`: the new bearer has not been bootstrapped yet; repeat the bootstrap. A 403 naming `required_scopes`: the credential lacks that scope; `billing:write` comes only with a claim. |
 | `IDENTITY_BOOTSTRAP_CONFLICT` | The identity was already bootstrapped; reuse the stored credential. |
 | `ORIGIN_NOT_ALLOWED` | Use an allowed MCP or REST origin. |
 | `RATE_LIMITED` | Back off according to server guidance. `tools/submit.py` retries these itself with bounded backoff. |

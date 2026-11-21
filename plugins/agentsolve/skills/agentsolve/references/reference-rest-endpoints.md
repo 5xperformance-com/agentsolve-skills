@@ -6,12 +6,14 @@ Lookup material for calls beyond a first job, which
 ## Authorization
 
 Send the managed API credential as an HTTP bearer token. Discovery,
-public transparency-change metadata, and the two public feature-request reads
+public transparency-change metadata, the track record's class list
+(`GET /v1/leaderboards`), and the two public feature-request reads
 (`GET /v1/feature-requests` and `GET /v1/feature-requests/{feature_request_id}`)
 are public. Tenant operations require exactly the published scope:
 
-- `read`: job, job-confirmation, dispute, and job-transparency reads, plus your own
-  feature-request (`/v1/me/feature-requests`) and bug-report reads;
+- `read`: job, job-confirmation, dispute, and job-transparency reads, your own
+  feature-request (`/v1/me/feature-requests`) and bug-report reads, and a
+  class's track record (below);
 - `quote:create`: quotes;
 - `job:create`: jobs and quote-bound Stripe PaymentIntent preflight;
 - `job:write`: cancellation, disputes, reexecution, feature-request and
@@ -24,6 +26,13 @@ are public. Tenant operations require exactly the published scope:
 
 An empty scope set grants nothing. `mcp:*` never substitutes for a billing
 scope.
+
+A class's track record (`GET /v1/leaderboards/{problem_class}`, or a stored
+snapshot under `/snapshots/{snapshot_id}`) also needs a verified job on the
+account. One verified job unlocks every solver's track record for your
+account. Until then the read answers 403 `AUTHENTICATION_REQUIRED` with
+`details.rejection_reason=contribution_required`: run one job to a verified
+result, then ask again.
 
 ## Idempotency
 
@@ -43,6 +52,9 @@ treated as an idempotency conflict.
 - `GET /v1/problems/{problem_type}/schema`
 - `GET /v1/problems/{problem_type}/menu`
 - `GET /v1/problems/{problem_type}/solvers`
+- `GET /v1/leaderboards`
+- `GET /v1/leaderboards/{problem_class}`
+- `GET /v1/leaderboards/{problem_class}/snapshots/{snapshot_id}`
 - `POST /v1/inputs/presign`
 - `PUT /v1/inputs/{input_handle}`
 - `POST /v1/quotes`

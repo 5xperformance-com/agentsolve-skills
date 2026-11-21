@@ -12,6 +12,7 @@ Lookup material for calls beyond a first job, which
 - `agentsolve.solvers.list`
 - `agentsolve.schemas.get`
 - `agentsolve.menus.get`
+- `agentsolve.leaderboards.get`
 - `agentsolve.payments.capabilities`
 - `agentsolve.payments.stripe_payment_intents.create`
 - `agentsolve.payments.account_credit_topups.create`
@@ -48,6 +49,12 @@ solver-catalog read path (over REST the same list is
 `GET /v1/problems/{problem_type}/solvers`), and every quote candidate carries
 `solver_slot` and `solver_version`.
 
+`agentsolve.leaderboards.get` reads the solver track record: without
+`problem_class` the class list, with it that class's results, or the snapshot
+`snapshot_id` names. One verified job unlocks every solver's track record for
+your account. Until then a results call is refused with
+`AUTHENTICATION_REQUIRED` and `rejection_reason` `contribution_required`.
+
 ## Idempotency
 
 Creation tools expose caller-generated idempotency keys for quotes, jobs,
@@ -57,8 +64,8 @@ operation and a new key for a materially different payload.
 
 ## Scopes
 
-Read-only discovery, schemas, menus, job polling, transparency, and the
-feature-request and bug-report reads use `read`.
+Read-only discovery, schemas, menus, the track record, job polling,
+transparency, and the feature-request and bug-report reads use `read`.
 Quote creation uses `quote:create`. The upload-handle tool is available and
 uses the same scope; see [large inputs](reference-large-inputs.md) for its
 limits.
